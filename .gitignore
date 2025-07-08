@@ -1,0 +1,12 @@
+tmp
+tmp/*
+*/temp/*
+temp
+temp\*
+*\temp\*
+*ConfluenceTransfer.log
+logs
+logs\errored\*
+*.log
+*.json
+*.html
