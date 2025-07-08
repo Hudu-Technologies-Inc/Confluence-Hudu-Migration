@@ -127,8 +127,6 @@ It might be neat to incorporate some of the other non-pages / non-article data i
 
 # Disclaimer
 
-This PowerShell script is provided . Use it at your own risk. The author is not responsible for any damages or issues that may arise from its use. Always review the code and test in a safe environment before deploying.
-
 This PowerShell script is provided "as-is" without any warranties or guarantees, express or implied. The authors and Hudu Technologies make no guarantees regarding the accuracy, reliability, or suitability of the script for any purpose.
 
 By using this script, you acknowledge that you do so at your own risk. The authors and Hudu Technologies shall not be liable for any damages, losses, or issues that may arise from its use, including but not limited to data loss, system failures, or security breaches. Always review the code thoroughly and test it in a safe environment before deploying it in a production setting.
