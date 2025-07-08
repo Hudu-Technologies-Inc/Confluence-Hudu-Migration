@@ -101,6 +101,7 @@ and based on your confluence page metadata, these are replaced with the equivile
 ## Main Logfile
 
 Your Main log file can be found in `logs\ConfluenceTransfer.log`
+
 <img width="331" alt="image" src="https://github.com/user-attachments/assets/cc76067d-5906-4d66-97bc-626dc51662bd" />
 
 ## Tmp dir and files
