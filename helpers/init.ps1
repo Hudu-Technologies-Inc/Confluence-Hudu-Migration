@@ -4,10 +4,6 @@
 $AzVault_Name = "hudu-pshell-learning"
 $AzVault_HuduSecretName = "demo3-apikey-mason"
 $AzVault_ConfluenceAPIKey="ConfluenceAPIKey"
-$ContentType = "page"
-$ConfluenceToken= $ConfluenceToken ?? "$(Read-Host "Please Enter Confluence Token")"
-$confluenceBase="$($ConfluenceDomain).atlassian.net"
-
 
 # ---------------------------------------
 # Hudu Variables
@@ -20,11 +16,15 @@ $HUDU_MAX_DOCSIZE=6500
 # ---------------------------------------
 # Confluence Variables
 # ---------------------------------------
-$ConfluenceDomain = "hudu-integrations"
-$Confluence_Username="integrations@hudu.com"
-$ConfluenceArticlePreviewLength = 6750
+$ContentType = "page"
+$ConfluenceToken= $ConfluenceToken ?? "$(Read-Host "Please Enter Confluence Token")"
+$ConfluenceDomain = $ConfluenceDomain ?? "$(read-host "please enter your Confluence subdomain (e.g 'hudu-integrations' would be valid for 'https://www.hudu-integrations.atlassian.net'.)")"
+$confluenceBase="$($ConfluenceDomain).atlassian.net"
 $ConfluenceDomainBase= "https://$confluenceBase"
 $ConfluenceBaseUrl ="$ConfluenceDomainBase/wiki"
+$Confluence_Username=$Confluence_Username ?? "$(read-host "please enter the username associated with your Confluence account / token")"
+$ConfluenceArticlePreviewLength = 6750
+
 # ---------------------------------------
 # quick validation
 # ---------------------------------------
