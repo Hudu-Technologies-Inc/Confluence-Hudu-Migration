@@ -356,7 +356,7 @@ foreach ($page in $StubbedPages) {
                 $record.UploadResult    = $upload
                 $record.HuduUploadType  = $ImageMap[$normalizedFileName].Type
                 $record.HuduArticleId   = $($page.stub).id
-                $RunSummary.UploadsCreated += 1
+                $RunSummary.JobInfo.UploadsCreated += 1
             } catch {
                 $ErrorInfo=@{
                     Error       =$_
