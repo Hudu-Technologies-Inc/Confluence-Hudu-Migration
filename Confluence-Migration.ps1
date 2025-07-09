@@ -37,6 +37,7 @@ $RunSummary=@{
         project_workdir     = $project_workdir
         StartedAt           = $(get-date)
         FinishedAt          = $null
+        RunDuration         = $null
     }
     JobInfo=@{
         MigrationSource     = [PSCustomObject]@{}
@@ -262,8 +263,6 @@ foreach ($page in $SourcePages) {
     Write-Progress -Activity "Stubbing $($page.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
 
 }
-
-
 $RunSummary.CompletedStates += "$($RunSummary.State) finished in $($($(Get-Date) - $RunSummary.SetupInfo.StartedAt).ToString())"
 $RunSummary.State="Processing Attachments"
 write-host "Part $($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta
@@ -500,7 +499,7 @@ foreach ($id in $Article_Relinking.Keys) {
         }
     }
  
-    # 3. Regex to match href="/12345" or href="/12345?someparam"
+    # 2. Regex to match href="/12345" or href="/12345?someparam"
     $pattern = 'https://' + [regex]::Escape($ConfluenceDomain) + '\.atlassian\.net/wiki(?:/[^"''\s<>]*)?'
     $htmlContent = [regex]::Replace($htmlContent, $pattern, {
         param($match)
@@ -515,14 +514,14 @@ foreach ($id in $Article_Relinking.Keys) {
         return $match.Value
     }, 'IgnoreCase')
 
-    # 4. Replace legacy Confluence view links like ?pageId=98429
+    # 3. Replace legacy Confluence view links like ?pageId=98429
     $pageIdPattern = [regex]::Escape("pageId=$($entry.Page.id)")
     if ($htmlContent -match $pageIdPattern) {
         $htmlContent = $htmlContent -replace $pageIdPattern, $huduUrl
         PrintAndLog -Message "Replaced legacy pageId=$($entry.Page.id)" -Color Green
     }
 
-    # 5. Replace direct "page/<id>" references
+    # 4. Replace direct "page/<id>" references
     $pagePathPattern = [regex]::Escape("page/$($entry.Page.id)")
     if ($htmlContent -match $pagePathPattern) {
         $htmlContent = $htmlContent -replace [regex]::Escape($pagePathPattern), $entry.HuduArticle.url
@@ -550,23 +549,25 @@ foreach ($id in $Article_Relinking.Keys) {
     Write-Progress -Activity "Finalizing $($relPage.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
 
 }
-
-$RunSummary.CompletedStates += "finished in $($($RunSummary.SetupInfo.FinishedAt - $RunSummary.SetupInfo.StartedAt).ToString())"
-$RunSummary.State="Finished"
-write-host "$($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta
-
-$RunSummary.SetupInfo.FinishedAt        = $(get-date)
-$RunSummary.JobInfo.LinksCreated        = $AllNewLinks.count
-$RunSummary.JobInfo.LinksReplaced       = $AllReplacedLinks.count
-$RunSummary.JobInfo.LinksFound          = $AllFoundLinks.count
-
 $Article_Relinking.GetEnumerator() |
     ForEach-Object { [ordered]@{ "$($_.Key)" = $_.Value } } |
     ConvertTo-Json -Depth 10 |
     Out-File "$TmpOutputDir\Article_Relinking.json"
 
-$ConfluenceToHuduUrlMap | ConvertTo-Json -Depth 5 | Out-File "$TmpOutputDir\UrlMap.json"
-foreach ($varname in @("encodedCreds","HuduAPIKey")) {
-    remove-variable -name varname -Force -ErrorAction SilentlyContinue
+# Wrap up
 
-}AllFoundLinks
+
+$RunSummary.SetupInfo.FinishedAt        = $(get-date)
+$RunSummary.JobInfo.LinksCreated        = $AllNewLinks.count
+$RunSummary.JobInfo.LinksReplaced       = $AllReplacedLinks.count
+$RunSummary.JobInfo.LinksFound          = $AllFoundLinks.count
+$RunSummary.SetupInfo.RunDuration       = $($RunSummary.SetupInfo.FinishedAt - $RunSummary.SetupInfo.StartedAt).ToString()
+$RunSummary.CompletedStates += "finished in $($RunSummary.SetupInfo.RunDuration)"
+$RunSummary.State="Finished"
+
+$ConfluenceToHuduUrlMap | ConvertTo-Json -Depth 5 | Out-File "$TmpOutputDir\UrlMap.json"
+foreach ($varname in @("encodedCreds","HuduAPIKey","ConfluenceToken")) {
+    remove-variable -name varname -Force -ErrorAction SilentlyContinue
+}
+$RunSummary | ConvertTo-Json -Depth 10 | Out-File "$(join-path $LogsDir "RunSummary.log")"
+write-host "$($RunSummary.CompletedStates.count): $($RunSummary.State) in $($RunSummary.SetupInfo.RunDuration) with $($RunSummary.Errors.count) errors and $($RunSummary.Warnings.count)" -ForegroundColor Magenta
