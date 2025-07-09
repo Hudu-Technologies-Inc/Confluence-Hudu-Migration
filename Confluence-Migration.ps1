@@ -16,34 +16,58 @@
 #
 # Authors: Mason Stetler
 
-
-
 $project_workdir=$PSScriptRoot
 . ".\helpers\init.ps1"
 . ".\helpers\confluence.ps1"
 . ".\helpers\general.ps1"
 
-$TrackedAttachments = [System.Collections.ArrayList]@()
-$TrackedAssets = [System.Collections.ArrayList]@()
-
-$AllReplacedLinks =  [System.Collections.ArrayList]@()
-$AllFoundLinks =[System.Collections.ArrayList]@()
-$AllNewLinks = [System.Collections.ArrayList]@()
-
 
 $ImageMap = @{}
 $ConfluenceToHuduUrlMap = @{}
 $Article_Relinking=@{}
+$RunSummary=@{
+    State="Set-Up"
+    CompletedStates=@()
+    SetupInfo=@{
+        HuduDestination     = $HuduBaseUrl
+        ConfluenceSource    = $ConfluenceBaseUrl
+        HuduVersion         = [version]$HuduAppInfo.version
+        PowershellVersion   = [version]$PowershellVersion
+        RunSpace            = $(get-host).runspace
+        project_workdir     = $project_workdir
+        StartedAt           = $(get-date)
+        FinishedAt          = $null
+    }
+    JobInfo=@{
+        MigrationSource     = [PSCustomObject]@{}
+        MigrationDest       = [PSCustomObject]@{}
+        Spaces              = [System.Collections.ArrayList]@()
+        PagesCount          = 0
+        LinksCreated        = 0
+        LinksFound          = 0
+        LinksReplaced       = 0
+        ArticlesCreated     = 0
+        AttachmentsFound    = 0
+        UploadsCreated      = 0
+    }
+    Errors                  = [System.Collections.ArrayList]@()
+    Warnings                = [System.Collections.ArrayList]@()
+}
+$TrackedAttachments = [System.Collections.ArrayList]@()
+$AllReplacedLinks =  [System.Collections.ArrayList]@()
+$AllFoundLinks =[System.Collections.ArrayList]@()
+$AllNewLinks = [System.Collections.ArrayList]@()        
 
 # Step 1.1- Get spaces and select which or all spaces to get pages from
 PrintAndLog -message  "Getting All Spaces and configuring Source options (Confluence-Side)" -Color Blue
 $AllSpaces=GetAllSpaces -baseUrl $ConfluenceBaseUrl -authHeader "Basic $encodedCreds"
 if ($AllSpaces.Count -eq 0) {
     PrintAndLog -message  "Sorry, we didnt seem to see any Confluence Spaces! Double-check your credentials and try again." -Color Red
+    exit 1
 }
 
 $SourcePages = @()
-$SourceMigrationChoice=$(Select-Object-From-List -Objects @(
+$RunSummary.JobInfo.MigrationSource=$(Select-Object-From-List -Objects @(
 [PSCustomObject]@{
     OptionMessage= "From a Single/Specific Confluence Space"
     Identifier = 0
@@ -54,19 +78,21 @@ $SourceMigrationChoice=$(Select-Object-From-List -Objects @(
 }) -message "Configure Source (Confluence-Side) Options from Confluence- Migrate pages from which Space(s)?" -allowNull $false)
 
 # Step 1.2- Obtain and record pages/attachments for space(s)
-if ([int]$SourceMigrationChoice.Identifier -eq 0) {
+if ([int]$RunSummary.JobInfo.MigrationSource.Identifier -eq 0) {
     $SingleChosenSpace=$(Select-Object-From-List -Objects $AllSpaces - Message "From which single space would you like to migrate pages from?")  
+    $RunSummary.JobInfo.Spaces.Add($SingleChosenSpace) | Out-Null
     $SingleChosenSpace.OptionMessage="$($SingleChosenSpace.OptionMessage) (space: $($SingleChosenSpace.name)/$($SingleChosenSpace.key))"
     $SourcePages=$(GetAllPages -SpaceKey $SingleChosenSpace.key -SpaceName $SingleChosenSpace.name -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
 } else {
     foreach ($space in $AllSpaces) {
         PrintAndLog -message "Obtaining Pages from space: $($space.name)/$($space.key)" -Color Blue
+        $RunSummary.JobInfo.Spaces.Add($space) | Out-Null
         $addedPages = $(GetAllPages -SpaceKey $space.key -SpaceName $space.name -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
         $SourcePages+=$addedPages
     }
 }
 
-
+$RunSummary.JobInfo.PagesCount = $SourcePages.count
 foreach ($page in $SourcePages) {
     $page | Add-Member -NotePropertyName FetchedBy     -NotePropertyValue $localhost_name -Force
     $page | Add-Member -NotePropertyName OriginalTitle -NotePropertyValue $page.title -Force
@@ -78,10 +104,10 @@ foreach ($page in $SourcePages) {
     $page | Add-Member -NotePropertyName updatedHtml   -NotePropertyValue $null -Force
     $page | Add-Member -NotePropertyName CompanyId     -NotePropertyValue $null -Force
     $page | Add-Member -NotePropertyName ReplacedLinks -NotePropertyValue $null -Force
-    $page | Add-Member -NotePropertyName RegexLinks    -NotePropertyValue $null -Force
     $page | Add-Member -NotePropertyName HuduArticle   -NotePropertyValue $null -Force
     $page | Add-Member -NotePropertyName CharsTrimmed  -NotePropertyValue 0 -Force
     $page | Add-Member -NotePropertyName Links         -NotePropertyValue $(Get-LinksFromHTML -htmlContent $page.body.storage.value -title $page.title -includeImages $false) -Force
+    $page | Add-Member -NotePropertyName RegexLinks    -NotePropertyValue $null -Force
     $page | Add-Member -NotePropertyName BaseLinks     -NotePropertyValue $(Get-ConfluenceLinks -page $page) -Force
     $attachments = Get-AttachmentsForPage -baseUrl $ConfluenceBaseUrl -pageId $page.id -authHeader "Basic $encodedCreds"
     $page | Add-Member -NotePropertyName attachments -NotePropertyValue $attachments -Force
@@ -109,17 +135,17 @@ foreach ($page in $SourcePages) {
     $attachidx=0
     foreach ($attachment in $page.attachments) {
         $attachidx=$attachidx+1
+        $RunSummary.JobInfo.AttachmentsFound+=1
         write-host "    attachment $attachidx- $attachment"
     }
-    
-
 }
-if ($SourcePages.Count -eq 0) {
+
+if ($RunSummary.JobInfo.PagesCount -eq 0) {
     PrintAndLog -message  "Sorry, we didnt seem to see any Source Articles/Pages in Confluence! Double-check your credentials and try again." -Color Red
     exit
 } else {
-    $SourceMigrationChoice.OptionMessage="Migrate $($SourcePages.count) Articles/Pages $($SourceMigrationChoice.OptionMessage)"
-    PrintAndLog -message "Elected to $SourceMigrationChoice" -Color Yellow
+    $RunSummary.JobInfo.MigrationSource.OptionMessage="Migrate $($RunSummary.JobInfo.PagesCount) Articles/Pages $($RunSummary.JobInfo.MigrationSource.OptionMessage)"
+    PrintAndLog -message "Elected to $($RunSummary.JobInfo.MigrationSource.OptionMessage)" -Color Yellow
 }
 if ($(Select-Object-From-List -objects @("yes","no") -message "does this look correct?") -eq "no") {write-error "please re-invoke to start over."; exit 1}
 
@@ -131,7 +157,7 @@ if ($all_companies.Count -eq 0) {
     PrintAndLog -message  "Sorry, we didnt seem to see any Companies set up in Hudu... If you intend to attribute certain articles to certain companies, be sure to add your companies first!" -Color Red
 }
 $Attribution_Options=@()
-$DestMigrationChoice=$(Select-Object-From-List -Objects @(
+$RunSummary.JobInfo.MigrationDest=$(Select-Object-From-List -Objects @(
     [PSCustomObject]@{
         OptionMessage= "To a Single Specific Company in Hudu"
         Identifier = 0
@@ -144,9 +170,10 @@ $DestMigrationChoice=$(Select-Object-From-List -Objects @(
         OptionMessage= "To Multiple Companies in Hudu - Let Me Choose for Each article ($($all_companies.count) available destination company choices)"
         Identifier = 2
     }
-) -message "Configure Destination (Hudu-Side) Options- $($SourceMigrationChoice.OptionMessage) to where in Hudu?" -allowNull $false)
+) -message "Configure Destination (Hudu-Side) Options- $($RunSummary.JobInfo.MigrationSource.OptionMessage) to where in Hudu?" -allowNull $false)
 
-if ([int]$DestMigrationChoice.Identifier -eq 0) {
+
+if ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 0) {
     $SingleCompanyChoice=$(Select-Object-From-List -Objects $all_companies -message "Which company to $($SourcePages.OptionMessage) ($($SourcePages.count)) articles to?")
     $Attribution_Options=[PSCustomObject]@{
         CompanyId            = $SingleCompanyChoice.Id
@@ -154,8 +181,8 @@ if ([int]$DestMigrationChoice.Identifier -eq 0) {
         OptionMessage        = "Company Name: $($SingleCompanyChoice.Name), Company ID: $($SingleCompanyChoice.Id)"
         IsGlobalKB           = $false
     }
-    $DestMigrationChoice.OptionMessage="$($DestMigrationChoice.OptionMessage) (Company Name: $($SingleCompanyChoice.Name), Company ID: $($SingleCompanyChoice.Id))"
-} elseif ([int]$DestMigrationChoice.Identifier -eq 1) {
+    $RunSummary.JobInfo.MigrationDest.OptionMessage="$($RunSummary.JobInfo.MigrationDest.OptionMessage) (Company Name: $($SingleCompanyChoice.Name), Company ID: $($SingleCompanyChoice.Id))"
+} elseif ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 1) {
     $Attribution_Options+=[PSCustomObject]@{
         CompanyId            = 0
         CompanyName          = "Global KB"
@@ -186,19 +213,23 @@ if ([int]$DestMigrationChoice.Identifier -eq 0) {
     }
 }
 
-PrintAndLog -message "You've elected for this migration path: $($SourceMigrationChoice.OptionMessage) $($DestMigrationChoice.OptionMessage)." -Color Yellow
+
+PrintAndLog -message "You've elected for this migration path: $($RunSummary.JobInfo.MigrationSource.OptionMessage) $($RunSummary.JobInfo.MigrationDest.OptionMessage)." -Color Yellow
 Read-Host "Press enter now or CTL+C / Close window to exit now!"
 
-write-host "Part 1: Stubbing articles" -ForegroundColor Magenta
+$RunSummary.CompletedStates += "$($RunSummary.State) finished in $($($(Get-Date) - $RunSummary.SetupInfo.StartedAt).ToString())"
+$RunSummary.State="Stubbing articles"
+write-host "Part $($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta
+
 $PageIDX=0
 foreach ($page in $SourcePages) {
     $PageIDX=$PageIDX+1
     $completionPercentage = Get-PercentDone -Current $PageIDX -Total $SourcePages.count
     #Generate articl preview
             
-    if ([int]$DestMigrationChoice.Identifier -eq 0) {
+    if ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 0) {
         $page.CompanyId = $SingleCompanyChoice.id
-    } elseif ([int]$DestMigrationChoice.Identifier -eq 1) {
+    } elseif ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 1) {
         $page.CompanyId = $null  # global KB
     } else {
         $page.CompanyId = $($Company_attribution ?? (Select-Object-From-List -message "Migrating Article: $($page.articlePreview ?? "no preview")... Which company to migrate into?" -objects $Attribution_Options)).CompanyId
@@ -233,8 +264,10 @@ foreach ($page in $SourcePages) {
 }
 
 
+$RunSummary.CompletedStates += "$($RunSummary.State) finished in $($($(Get-Date) - $RunSummary.SetupInfo.StartedAt).ToString())"
+$RunSummary.State="Processing Attachments"
+write-host "Part $($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta
 
-write-host "Part 2: Process Attachments" -ForegroundColor Magenta
 $PageIDX=0
 foreach ($page in $SourcePages) {
     $PageIDX=$PageIDX+1
@@ -249,6 +282,8 @@ foreach ($page in $SourcePages) {
     foreach ($att in $page.attachments) {
         $AttachIDX+=1
         $UploadedAsDoc=$false
+
+        # Start Attachment Download
         $record = Invoke-ConfluenceAttachDownload -attachment $att -page $page -pageId $page.id -title $page.title -ConfluenceBaseUrl $ConfluenceBaseUrl -TmpOutputDir $TmpOutputDir -encodedCreds $encodedCreds
 
         [void]$TrackedAttachments.Add($record ?? [PSCustomObject]@{
@@ -258,7 +293,7 @@ foreach ($page in $SourcePages) {
             PageId           = $($page.id)
             PageTitle        = $($page.title)
             SourceUrl        = "$ConfluenceBaseUrl$($record._links.download)"
-            LocalPath        = 
+            LocalPath        = "$TmpOutputDir\$($record.title)"
             UploadResult     = $null
             HuduArticleId    = $null
             HuduUploadType   = $null
@@ -269,15 +304,18 @@ foreach ($page in $SourcePages) {
 
         printandlog -message "Downloaded Attachment $AttachIDX of $($page.attachments.Count) for $($page.title) - $($attachment.filename ?? "File")" -Color Yellow
         if ($record -and $record.SuccessDownload -and $record.LocalPath) {
+            # Handle attachments that are too large for Hudu (larger than)
             if ($true -eq $record.AttachmentTooLarge) {
-                Write-ErrorObjectsToFile -ErrorObject @{
+                $ErrorObject=@{
                     Attachment = $record
                     Problem    = "$($record.Filename) is TOO LARGE for Hudu. Manual Action is required. Skipping."
                     page       = $page
-                } -name "Attach-Error-$($record.Filename)"
+                }
+                $RunSummary.Errors = $ErrorObject
+                Write-ErrorObjectsToFile -ErrorObject $ErrorObject -name "Attach-Error-$($record.Filename)"
                 continue
             }
-
+            # Start attachment upload if download successful and meets criteria
             try {
                 PrintAndLog -Message "Uploading image: $($record.FileName) => record_id=$($($page.stub).id) record_type=Article" -Color Green
                 $upload=$null
@@ -304,7 +342,7 @@ foreach ($page in $SourcePages) {
                 $record.HuduArticleId   = $($page.stub).id
 
             } catch {
-                Write-ErrorObjectsToFile -Name "$($record.FileName)" -ErrorObject @{
+                $ErrorInfo=@{
                     Error       =$_
                     Record      =$record
                     Attachment  =$att
@@ -312,6 +350,8 @@ foreach ($page in $SourcePages) {
                     Article     =$($page.stub)
                     Page        =$page
                 }
+                $RunSummary.Errors.add($ErrorInfo)
+                Write-ErrorObjectsToFile -Name "$($record.FileName)" -ErrorObject $ErrorInfo
             }
         }
     }
@@ -320,8 +360,10 @@ foreach ($page in $SourcePages) {
 }
 $ImageMap | ConvertTo-Json -Depth 5 | Out-File "$TmpOutputDir\ImageMap-$($page.title).json"
 
+$RunSummary.CompletedStates += "$($RunSummary.State) finished in $($($(Get-Date) - $RunSummary.SetupInfo.StartedAt).ToString())"
+$RunSummary.State="Replacing Embed/Attachment Links and Confluence Bloat"
+write-host "Part $($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta
 
-write-host "Part 3: Replacing Embed/Attachment Links and Confluence Bloat" -ForegroundColor Magenta
 $PageIDX=0
 foreach ($page in $SourcePages) {
     $PageIDX=$PageIDX+1
@@ -363,16 +405,27 @@ foreach ($page in $SourcePages) {
         }
         
     } catch {
-        Write-ErrorObjectsToFile -name "Pop-$($page.title)" -ErrorObject @{
-            Message="Error Populating Article: $($page.title)"
+        # Handle articles that are too large having an issue during file upload / linking
+        $ErrorInfo=@{
+            MaxContentLength=$HUDU_MAX_DOCSIZE
+            Message="Error Uploading article with content that is too long: $($page.title)"
             Error=$_
             HuduArticle=$(Get-HuduArticles -id $($page.stub).id).Article
             Page=$page
+            ArticleURL=$($page.stub.url ?? "URL not found")
         }
+        $RunSummary.Errors.add($ErrorInfo)
+        Write-ErrorObjectsToFile -name "largearticle-$($page.title)" -ErrorObject $ErrorInfo
         continue
     }
 
     if ($true -eq $UploadedAsDoc) {
+        # Add a warning for articles that are too large being uploaded as linked standalone file
+        $RunSummary.Warnings.add(@{
+            Warning="Document from page $($page.title) was too large and was uploaded as standalone HTML File; Please review."
+            ArticleURL=$htmlAttachment.Article.url ?? ($page.stub.url ?? "URL not found")
+            PageURL=$page.FullUrl ?? ("$baseUrl$($page._links.webui)" ?? "URL not found")
+        })
         continue
     }
 
@@ -394,9 +447,10 @@ $Article_Relinking.GetEnumerator() |
     Out-File "$TmpOutputDir\Article_Relinking.json"
 $ConfluenceToHuduUrlMap | ConvertTo-Json -Depth 5 | Out-File "$TmpOutputDir\UrlMap.json"
 
+$RunSummary.CompletedStates += "$($RunSummary.State) finished in $($($(Get-Date) - $RunSummary.SetupInfo.StartedAt).ToString())"
+$RunSummary.State="Relinking Imported Articles"
+write-host "Part $($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta
 
-
-PrintAndLog -Message "Part 4: Relinking Imported Articles" -Color Yellow
 $PageIDX=0
 foreach ($id in $Article_Relinking.Keys) {
     $entry = $Article_Relinking[$id]
@@ -497,11 +551,22 @@ foreach ($id in $Article_Relinking.Keys) {
 
 }
 
-$AllReplacedLinks | ConvertTo-Json -Depth 10 | Out-File "$TmpOutputDir\replacedlinks.json"
-$AllFoundLinks | ConvertTo-Json -Depth 10 | Out-File "$TmpOutputDir\foundlinks.json"
-$AllNewLinks | ConvertTo-Json -Depth 10 | Out-File "$TmpOutputDir\newewLinks.json"
+$RunSummary.CompletedStates += "finished in $($($RunSummary.SetupInfo.FinishedAt - $RunSummary.SetupInfo.StartedAt).ToString())"
+$RunSummary.State="Finished"
+write-host "$($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta
+
+$RunSummary.SetupInfo.FinishedAt        = $(get-date)
+$RunSummary.JobInfo.LinksCreated        = $AllNewLinks.count
+$RunSummary.JobInfo.LinksReplaced       = $AllReplacedLinks.count
+$RunSummary.JobInfo.LinksFound          = $AllFoundLinks.count
+
 $Article_Relinking.GetEnumerator() |
     ForEach-Object { [ordered]@{ "$($_.Key)" = $_.Value } } |
     ConvertTo-Json -Depth 10 |
     Out-File "$TmpOutputDir\Article_Relinking.json"
+
 $ConfluenceToHuduUrlMap | ConvertTo-Json -Depth 5 | Out-File "$TmpOutputDir\UrlMap.json"
+foreach ($varname in @("encodedCreds","HuduAPIKey")) {
+    remove-variable -name varname -Force -ErrorAction SilentlyContinue
+
+}AllFoundLinks

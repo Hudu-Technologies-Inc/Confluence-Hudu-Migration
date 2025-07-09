@@ -75,10 +75,18 @@ Write-Host "Authenticating to Hudu instance @$HuduBaseURL..."
 New-HuduAPIKey $HuduAPIKey
 New-HuduBaseUrl $HuduBaseURL
 
-if ((get-host).version.major -ne 7) {
-    Write-Host "Powershell 7 Required" -foregroundcolor Red
+$PowershellVersion = [version](Get-Host).Version
+$requiredPowershellVersion = [version]"7.5.0"
+Write-Host "Required PowerShell version: $requiredPowershellVersion" -ForegroundColor Blue
+
+if ($PowershellVersion -lt $requiredPowershellVersion) {
+    Write-Host "PowerShell $requiredPowershellVersion or higher is required. You have $PowershellVersion." -ForegroundColor Red
     exit 1
+} else {
+    Write-Host "PowerShell version $PowershellVersion found" -ForegroundColor Green
 }
+
+
 $RequiredHuduVersion = "2.37.1"
 $HuduAppInfo = Get-HuduAppInfo
 $CurrentVersion = [version]$HuduAppInfo.version
