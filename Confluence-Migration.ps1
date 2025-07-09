@@ -503,7 +503,6 @@ foreach ($id in $Article_Relinking.Keys) {
         $escaped = [regex]::Escape($confluenceUrl)
 
         if ($htmlContent -match $escaped) {
-            $RunSummary.JobInfo.LinksReplaced+=1
             $htmlContent = $htmlContent -replace $escaped, $huduUrl
             PrintAndLog -Message "Matched and replaced escaped url: $confluenceUrl → $huduUrl" -Color Green
         }
@@ -511,7 +510,6 @@ foreach ($id in $Article_Relinking.Keys) {
         $escapedMalformed = [regex]::Escape($malformed)
 
         if ($htmlContent -match $escapedMalformed) { 
-            $RunSummary.JobInfo.LinksReplaced+=1
             $htmlContent = $htmlContent -replace $escapedMalformed, $huduUrl
             PrintAndLog -Message "Matched and replaced /wiki url: $malformed → $huduUrl" -Color Green
         }
@@ -526,7 +524,6 @@ foreach ($id in $Article_Relinking.Keys) {
 
         if ($matchedPage) {
             $replacement = $matchedPage.HuduArticle.url
-            $RunSummary.JobInfo.LinksReplaced+=1
             PrintAndLog -Message "Replaced object refrence (PageId) url $matchedId → $replacement" -Color Cyan
             return $replacement
         }
@@ -537,7 +534,6 @@ foreach ($id in $Article_Relinking.Keys) {
     $pageIdPattern = [regex]::Escape("pageId=$($entry.Page.id)")
     if ($htmlContent -match $pageIdPattern) {
         $htmlContent = $htmlContent -replace $pageIdPattern, $huduUrl
-        $RunSummary.JobInfo.LinksReplaced+=1
         PrintAndLog -Message "Replaced legacy pageId=$($entry.Page.id)" -Color Green
     }
 
@@ -545,7 +541,6 @@ foreach ($id in $Article_Relinking.Keys) {
     $pagePathPattern = [regex]::Escape("page/$($entry.Page.id)")
     if ($htmlContent -match $pagePathPattern) {
         $htmlContent = $htmlContent -replace [regex]::Escape($pagePathPattern), $entry.HuduArticle.url
-        $RunSummary.JobInfo.LinksReplaced+=1
         PrintAndLog -Message "Replaced page/$($entry.Page.id) → $($entry.HuduArticle.url)" -Color Green
     }
 
@@ -566,19 +561,20 @@ foreach ($id in $Article_Relinking.Keys) {
     $relPage | ConvertTo-Json -Depth 10 | Out-File "$TmpOutputDir\completed-page-$($relPage.title).json"
     $AllReplacedLinks.Add($relPage.ReplacedLinks)
 
-    $completionPercentage = Get-PercentDone -Current ($PageIDX++) -Total $StubbedPages.Count
+    $completionPercentage = Get-PercentDone -Current ($PageIDX++) -Total $Article_Relinking.Count
     Write-Progress -Activity "Finalizing $($relPage.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
 
 }
+
+# Final step - Wrap up
+Write-Host "Calculating results, please wait." -ForegroundColor cyan
 $Article_Relinking.GetEnumerator() |
     ForEach-Object { [ordered]@{ "$($_.Key)" = $_.Value } } |
     ConvertTo-Json -Depth 10 |
     Out-File "$TmpOutputDir\Article_Relinking.json"
-
-# Final step - Wrap up
 $RunSummary.SetupInfo.FinishedAt        = $(get-date)
 $RunSummary.JobInfo.LinksCreated        = $AllNewLinks.count
-$RunSummary.JobInfo.LinksReplaced       = $AllReplacedLinks.count
+$RunSummary.JobInfo.LinksReplaced       = $(($StubbedPages | ForEach-Object { Get-LinksFromHTML -htmlContent $_ -title "" -includeImages $true -suppressOutput $true } | Where-Object { $_ -ilike "*$HuduBaseURL*" }).count)
 $RunSummary.JobInfo.LinksFound          = $AllFoundLinks.count
 $RunSummary.SetupInfo.RunDuration       = $($RunSummary.SetupInfo.FinishedAt - $RunSummary.SetupInfo.StartedAt).ToString()
 $RunSummary.CompletedStates += "finished in $($RunSummary.SetupInfo.RunDuration)"
