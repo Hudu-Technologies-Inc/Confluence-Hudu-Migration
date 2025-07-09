@@ -49,7 +49,9 @@ You can decide to:
 
 Now, the html bodies of your confluence articles, attachments, will be parsed, have their links spat out. 
 you can enter 1 to proceed (no going back) or enter 2 for this question to go back and start over
-<img width="1103" alt="image" src="https://github.com/user-attachments/assets/434e06f9-fc5d-43f9-9c57-eb1b7d4da003" />
+
+<img width="1435" alt="image" src="https://github.com/user-attachments/assets/0ee34fa5-34b8-4192-b636-fc317bc8a1a2" />
+
 This is mostly useful if your articles are blank or have an issue, to verify that the contents and links are present.
 
 Next, you'll be asked about where to migrate these articles.
@@ -57,6 +59,13 @@ You can decide to:
 - migrate these all to global/central KB (non-company-specific)
 - migrate these all to a single company
 - decide each time per-article
+
+If you selected to decide each time per-article, you'll then choose one of the following for each page/article based on the page title and page preview-
+-to associate page/article with any given company
+-leave it as a central/global kb article
+-skip article/page migration
+
+<img width="1530" alt="image" src="https://github.com/user-attachments/assets/c6d006c2-e3c4-4f01-9f31-f1dd1c83fe59" />
 
 ## Main Migration
 
@@ -102,7 +111,23 @@ and based on your confluence page metadata, these are replaced with the equivile
 
 Your Main log file can be found in `logs\ConfluenceTransfer.log`
 
-<img width="331" alt="image" src="https://github.com/user-attachments/assets/cc76067d-5906-4d66-97bc-626dc51662bd" />
+<img width="592" alt="image" src="https://github.com/user-attachments/assets/5f639aba-e436-4e4d-b91b-742e253c7b2a" />
+
+You will also have a summary json file in the same folder, named `job-summary.json`, which includes any brief messages about articles you skipped, attachments that were too large, or any other issues otherwise. It also includes some handy at-a-glance info about our 
+
+migration results, including some that are related to, but not limited to the following:
+
+- links found / created / replaced
+- articles found / created / skipped / errored
+- attachments / uploads created / found / skipped due to size
+- warnings or errors
+- articles that were too large
+- your hudu version
+- your powershell version
+
+<img width="551" alt="image" src="https://github.com/user-attachments/assets/a96ba0e5-534c-48f0-b097-bc41aa0bf01e" />
+
+It will be written out for reference, but you can also use this file to help others track down any problems.
 
 ## Tmp dir and files
 
@@ -123,7 +148,6 @@ This is handy for checking for any errors at a glance and taking action
 
 ### Todo/thoughts
 It might be neat to incorporate some of the other non-pages / non-article data in this migration
-
 
 # Disclaimer
 
