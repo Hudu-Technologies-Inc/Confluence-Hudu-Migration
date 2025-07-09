@@ -93,7 +93,6 @@ if ([int]$RunSummary.JobInfo.MigrationSource.Identifier -eq 0) {
     foreach ($space in $AllSpaces) {
         PrintAndLog -message "Obtaining Pages from space: $($space.name)/$($space.key)" -Color Blue
         $RunSummary.JobInfo.Spaces.Add($space) | Out-Null
-        $RunSummary.JobInfo.MigrationSource.OptionMessage="$($RunSummary.JobInfo.MigrationSource.OptionMessage)"
         $addedPages = $(GetAllPages -SpaceKey $space.key -SpaceName $space.name -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
         $SourcePages+=$addedPages
     }
