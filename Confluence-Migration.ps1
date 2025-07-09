@@ -51,8 +51,10 @@ $RunSummary=@{
         LinksReplaced       = 0
         ArticlesCreated     = 0
         ArticlesSkipped     = 0
+        ArticlesErrored     = 0
         AttachmentsFound    = 0
         UploadsCreated      = 0
+        UploadsErrored      = 0
     }
     Errors                  = [System.Collections.ArrayList]@()
     Warnings                = [System.Collections.ArrayList]@()
@@ -247,7 +249,7 @@ foreach ($page in $SourcePages) {
             Message     =      "User Elected to skip page/article transfer for $($page.title)"
             PageSkipped =      "Page with Confluence ID $($page.id), Titled $($page.title) was skipped by user. $($page.FullUrl ?? '')"
         }
-        $RunSummary.Skipped+=1
+        $RunSummary.JobInfo.Skipped+=1
         continue
     } else {
         printandlog -message "Stubbing KB article for Hudu company ID: $($page.CompanyId)" -Color  Yellow
@@ -261,15 +263,18 @@ foreach ($page in $SourcePages) {
         }
         Write-ErrorObjectsToFile -name "Stub-$($page.title)" -ErrorObject $ErrorObject
         $RunSummary.Errors.add($ErrorObject)
+        $RunSummary.JobInfo.ArticlesErrored+=1
         continue
     }
-    $StubbedPages+=$page
+    $RunSummary.JobInfo.ArticlesCreated+=1
+    $RunSummary.JobInfo.LinksCreated+=1
     $AllNewLinks.Add([PSCustomObject]@{
         PageId        = $page.id
         PageTitle     = $page.title
         HuduUrl       = $page.stub.url
         ArticleId     = $page.stub.id
     })
+    $StubbedPages+=$page
     Write-Progress -Activity "Stubbing $($page.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
 }
 
@@ -280,7 +285,7 @@ write-host "Part $($RunSummary.CompletedStates.count): $($RunSummary.State)" -Fo
 $PageIDX=0
 foreach ($page in $StubbedPages) {
     $PageIDX=$PageIDX+1
-    $completionPercentage = Get-PercentDone -Current $PageIDX -Total $SourcePages.count
+    $completionPercentage = Get-PercentDone -Current $PageIDX -Total $StubbedPages.count
 
 
     # get attachment / embedded images
@@ -322,6 +327,7 @@ foreach ($page in $StubbedPages) {
                     Article    = "Hudu stub with id $($($page.stub).id) at $($($page.stub).url)"
                 }
                 $RunSummary.Errors = $ErrorObject
+                $RunSummary.JobInfo.UploadsErrored+=1
                 Write-ErrorObjectsToFile -ErrorObject $ErrorObject -name "Attach-Error-$($record.Filename)"
                 continue
             }
@@ -354,13 +360,13 @@ foreach ($page in $StubbedPages) {
             } catch {
                 $ErrorInfo=@{
                     Error       =$_
-                    Record      =$record
-                    Attachment  =$att
-                    Message     ="Error During Attachment Upload"
-                    Article     =$($page.stub)
-                    Page        =$page
+                    Record      = $record.AttachmentSize ?? 0
+                    Message     = "Error During Attachment Upload"
+                    Article     = "Hudu Article id $($page.stub.id) at $($page.stub.url)"
+                    Page        = "Confluence page with Id $($page.id), titled $($page.title)- $($page.FullUrl ?? '')"
                 }
                 $RunSummary.Errors.add($ErrorInfo)
+                $RunSummary.JobInfo.UploadsErrored+=1
                 Write-ErrorObjectsToFile -Name "$($record.FileName)" -ErrorObject $ErrorInfo
             }
         }
@@ -368,8 +374,8 @@ foreach ($page in $StubbedPages) {
     Write-Progress -Activity "Processing attachments for $($page.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
 
 }
-$ImageMap | ConvertTo-Json -Depth 5 | Out-File "$TmpOutputDir\ImageMap-$($page.title).json"
 
+$ImageMap | ConvertTo-Json -Depth 5 | Out-File "$TmpOutputDir\ImageMap-$($page.title).json"
 $RunSummary.CompletedStates += "$($RunSummary.State) finished in $($($(Get-Date) - $RunSummary.SetupInfo.StartedAt).ToString())"
 $RunSummary.State="Replacing Embed/Attachment Links and Confluence Bloat"
 write-host "Part $($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta
@@ -420,10 +426,11 @@ foreach ($page in $StubbedPages) {
             Message="Error Uploading article with content that is too long: $($page.title)"
             Error=$_
             HuduArticle=$(Get-HuduArticles -id $($page.stub).id).Article
-            Page=$page
+            Page = "Confluence page with Id $($page.id), titled $($page.title)- $($page.FullUrl ?? '')"
             ArticleURL=$($page.stub.url ?? "URL not found")
         }
         $RunSummary.Errors.add($ErrorInfo)
+        $RunSummary.JobInfo.ArticlesErrored+=1
         Write-ErrorObjectsToFile -name "largearticle-$($page.title)" -ErrorObject $ErrorInfo
         continue
     }
@@ -496,13 +503,15 @@ foreach ($id in $Article_Relinking.Keys) {
         $escaped = [regex]::Escape($confluenceUrl)
 
         if ($htmlContent -match $escaped) {
+            $RunSummary.JobInfo.LinksReplaced+=1
             $htmlContent = $htmlContent -replace $escaped, $huduUrl
             PrintAndLog -Message "Matched and replaced escaped url: $confluenceUrl → $huduUrl" -Color Green
         }
         $malformed = $confluenceUrl -replace '^https?://[^/]+', ''  # remove domain only
         $escapedMalformed = [regex]::Escape($malformed)
 
-        if ($htmlContent -match $escapedMalformed) {
+        if ($htmlContent -match $escapedMalformed) { 
+            $RunSummary.JobInfo.LinksReplaced+=1
             $htmlContent = $htmlContent -replace $escapedMalformed, $huduUrl
             PrintAndLog -Message "Matched and replaced /wiki url: $malformed → $huduUrl" -Color Green
         }
@@ -517,6 +526,7 @@ foreach ($id in $Article_Relinking.Keys) {
 
         if ($matchedPage) {
             $replacement = $matchedPage.HuduArticle.url
+            $RunSummary.JobInfo.LinksReplaced+=1
             PrintAndLog -Message "Replaced object refrence (PageId) url $matchedId → $replacement" -Color Cyan
             return $replacement
         }
@@ -527,6 +537,7 @@ foreach ($id in $Article_Relinking.Keys) {
     $pageIdPattern = [regex]::Escape("pageId=$($entry.Page.id)")
     if ($htmlContent -match $pageIdPattern) {
         $htmlContent = $htmlContent -replace $pageIdPattern, $huduUrl
+        $RunSummary.JobInfo.LinksReplaced+=1
         PrintAndLog -Message "Replaced legacy pageId=$($entry.Page.id)" -Color Green
     }
 
@@ -534,6 +545,7 @@ foreach ($id in $Article_Relinking.Keys) {
     $pagePathPattern = [regex]::Escape("page/$($entry.Page.id)")
     if ($htmlContent -match $pagePathPattern) {
         $htmlContent = $htmlContent -replace [regex]::Escape($pagePathPattern), $entry.HuduArticle.url
+        $RunSummary.JobInfo.LinksReplaced+=1
         PrintAndLog -Message "Replaced page/$($entry.Page.id) → $($entry.HuduArticle.url)" -Color Green
     }
 
@@ -554,7 +566,7 @@ foreach ($id in $Article_Relinking.Keys) {
     $relPage | ConvertTo-Json -Depth 10 | Out-File "$TmpOutputDir\completed-page-$($relPage.title).json"
     $AllReplacedLinks.Add($relPage.ReplacedLinks)
 
-    $completionPercentage = Get-PercentDone -Current ($PageIDX++) -Total $Article_Relinking.Count
+    $completionPercentage = Get-PercentDone -Current ($PageIDX++) -Total $StubbedPages.Count
     Write-Progress -Activity "Finalizing $($relPage.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
 
 }
@@ -563,9 +575,7 @@ $Article_Relinking.GetEnumerator() |
     ConvertTo-Json -Depth 10 |
     Out-File "$TmpOutputDir\Article_Relinking.json"
 
-# Wrap up
-
-
+# Final step - Wrap up
 $RunSummary.SetupInfo.FinishedAt        = $(get-date)
 $RunSummary.JobInfo.LinksCreated        = $AllNewLinks.count
 $RunSummary.JobInfo.LinksReplaced       = $AllReplacedLinks.count
@@ -578,9 +588,8 @@ $ConfluenceToHuduUrlMap | ConvertTo-Json -Depth 15 | Out-File "$TmpOutputDir\Url
 foreach ($varname in @("encodedCreds","HuduAPIKey","ConfluenceToken")) {
     remove-variable -name varname -Force -ErrorAction SilentlyContinue
 }
-# Serialize and store summary JSON
+# Serialize summary JSON
 $SummaryJson = $RunSummary | ConvertTo-Json -Depth 15
-$SummaryJson| Out-File -Encoding UTF8 -Fil ePath (Join-Path $LogsDir "RunSummary.log")
 
 # Nicely print a cleaned-up version to the console
 $SummaryJson -split "`n" | ForEach-Object {
@@ -591,4 +600,4 @@ $SummaryJson -split "`n" | ForEach-Object {
 }
 
 # Print final state summary
-Write-Host "$($RunSummary.CompletedStates.Count): $($RunSummary.State) in $($RunSummary.SetupInfo.RunDuration) with $($RunSummary.Errors.Count) errors and $($RunSummary.Warnings.Count)" -ForegroundColor Magenta
+Write-Host "$($RunSummary.CompletedStates.Count): $($RunSummary.State) in $($RunSummary.SetupInfo.RunDuration) with $($RunSummary.Errors.Count) errors and $($RunSummary.Warnings.Count) warnings" -ForegroundColor Magenta
