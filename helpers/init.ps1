@@ -11,19 +11,16 @@ $AzVault_ConfluenceAPIKey="ConfluenceAPIKey"
 $HuduBaseURL = $HuduBaseURL ?? 
     $((Read-Host -Prompt 'Set the base domain of your Hudu instance (e.g https://myinstance.huducloud.com)') -replace '[\\/]+$', '') -replace '^(?!https://)', 'https://'
 $HuduAPIKey = $HuduAPIKey ?? "$(read-host "Please Enter Hudu API Key")"
-$HUDU_MAX_DOCSIZE=6500
 
 # ---------------------------------------
 # Confluence Variables
 # ---------------------------------------
-$ContentType = "page"
 $ConfluenceToken= $ConfluenceToken ?? "$(Read-Host "Please Enter Confluence Token")"
 $ConfluenceDomain = $ConfluenceDomain ?? "$(read-host "please enter your Confluence subdomain (e.g 'hudu-integrations' would be valid for 'https://www.hudu-integrations.atlassian.net'.)")"
 $confluenceBase="$($ConfluenceDomain).atlassian.net"
 $ConfluenceDomainBase= "https://$confluenceBase"
 $ConfluenceBaseUrl ="$ConfluenceDomainBase/wiki"
 $Confluence_Username=$Confluence_Username ?? "$(read-host "please enter the username associated with your Confluence account / token")"
-$ConfluenceArticlePreviewLength = 6750
 
 # ---------------------------------------
 # quick validation
