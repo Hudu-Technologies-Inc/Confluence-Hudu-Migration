@@ -163,59 +163,28 @@ function Get-YesNoResponse($message) {
     }
     while ($true)
 }
-function Strip-ConfluenceBloat {
-    param([string]$Html)
 
-    # Remove all <ac:*>...</ac:*>
-    $Html = [regex]::Replace($Html, '<ac:[^>]+>.*?</ac:[^>]+>', '', 'Singleline')
-
-    # Remove self-closing <ac:... />
-    $Html = [regex]::Replace($Html, '<ac:[^>]+?/>', '', 'Singleline')
-
-    # Remove <ri:...> and <ri:.../>
-    $Html = [regex]::Replace($Html, '<ri:[^>]+?>', '', 'Singleline')
-    $Html = [regex]::Replace($Html, '<ri:[^>]+?/>', '', 'Singleline')
-
-    # Convert <ac:task> blocks into bullet list items
-    $html = [regex]::Replace($html, '<ac:task>(.*?)<ac:task-body>(.*?)<\/ac:task-body>.*?<\/ac:task>', {
-        param($match)
-        $taskBody = $match.Groups[2].Value
-        # Optional: strip paragraph tags
-        $taskBody = $taskBody -replace '<\/?p>', ''
-        return "<li>☐ $taskBody</li>"
-    }, 'Singleline')
-
-    # Wrap the resulting tasks in a <ul> block
-    if ($html -match '<li>☐') {
-        $html = $html -replace '(<li>☐.*?</li>)', '<ul>$1</ul>'
+function Get-ArticlePreviewBlock {
+    param (
+        [string]$Title,
+        [string]$PageId,
+        [string]$Content,
+        [int]$MaxLength = 200
+    )
+    $descriptor = "ID: $PageId, titled $Title"
+    $snippet = if ($Content.Length -gt $MaxLength) {
+        $Content.Substring(0, $MaxLength) + "..."
+    } else {
+        $Content
     }
 
-    # Remove empty paragraphs
-    $Html = [regex]::Replace($Html, '<p>\s*</p>', '', 'Singleline')
-    if ($Html -match '/wikihttps://') {
-        $Html = $Html -replace '/wikihttps://', 'https://'
-    }
-    # Remove placeholders
-    $html = $html -replace '<ac:placeholder>.*?<\/ac:placeholder>', ''
-
-    # Strip empty paragraphs
-    $html = $html -replace '<li>\s*<p\s*/>\s*</li>', ''
-    $html = $html -replace '<li>\s*<p><br\s*/?></p>\s*</li>', ''
-    # Remove empty rows
-    $html = $html -replace '<tr>(\s*<td>(<p\s*/>|<p><br\s*/?></p>)</td>\s*)+</tr>', ''
-    $html = $html -replace '<tr>(\s*<td>(<p\s*\/>|<p><br\s*\/?><\/p>)<\/td>\s*)+</tr>', ''
-    # Emojis to Unicode
-    $html = $html -replace '<ac:emoticon[^>]*?ac:emoji-fallback="(.*?)"[^>]*>', '$1'
-    # Strip atlassian structured doc bloc
-    $html = $html -replace '<ac:adf-extension>.*?</ac:adf-extension>', ''
-    # Remove atlassian boilerplate headers
-    $html = $html -replace '<h2>.*?(Date|Participants|Goals|Discussion topics|Decisions).*?</h2>', ''
-
-    $html = $html -replace '/wikihttps://', 'https://'
-    $htmlContent = $htmlContent -replace "https://$ConfluenceDomain.atlassian.net/wikihttps://", 'https://'
-
-    return $Html
+@"
+Mapping Confluence Page $descriptor ---
+Title: $Title
+Snippet: $snippet
+"@
 }
+
 function Get-LinksFromHTML {
     param (
         [string]$htmlContent,
@@ -272,3 +241,4 @@ function Get-SafeFilename {
 
     return "$SafeName$SafeExt"
 }
+
