@@ -54,8 +54,8 @@ foreach ($folder in @($TmpOutputDir,$LogsDir,$ErroredItemsFolder)) {
 }
 
 
-[string]$HAPImodulePath = "C:\Users\$env:USERNAME\Documents\GitHub\HuduAPI\HuduAPI\HuduAPI.psm1",
-[bool]$use_hudu_fork = $true
+$HAPImodulePath = "C:\Users\$env:USERNAME\Documents\GitHub\HuduAPI\HuduAPI\HuduAPI.psm1",
+$use_hudu_fork = $true
 
 
 if ($true -eq $use_hudu_fork) {
@@ -77,12 +77,10 @@ if ($true -eq $use_hudu_fork) {
 if (Test-Path $HAPImodulePath) {
     Import-Module $HAPImodulePath -Force
     Write-Host "Module imported from $HAPImodulePath"
-} elseif ((Get-Module -ListAvailable -Name HuduAPI).Version -ge [version]'2.4.4') {
-    Import-Module HuduAPI
-    Write-Host "Module 'HuduAPI' imported from global/module path"
 } else {
-    Install-Module HuduAPI -MinimumVersion 2.4.5 -Scope CurrentUser -Force
-    Import-Module HuduAPI
+    foreach ($module in @('HuduAPI')) {if (Get-Module -ListAvailable -Name $module) 
+        { Write-Host "Importing module, $module..."; Import-Module $module } else {Write-Host "Installing and importing module $module..."; Install-Module $module -Force -AllowClobber; Import-Module $module }
+    }
     Write-Host "Installed and imported HuduAPI from PSGallery"
 }
 
