@@ -54,7 +54,7 @@ foreach ($folder in @($TmpOutputDir,$LogsDir,$ErroredItemsFolder)) {
 }
 
 
-$HAPImodulePath = "C:\Users\$env:USERNAME\Documents\GitHub\HuduAPI\HuduAPI\HuduAPI.psm1",
+$HAPImodulePath = "C:\Users\$env:USERNAME\Documents\GitHub\HuduAPI\HuduAPI\HuduAPI.psm1"
 $use_hudu_fork = $true
 
 
