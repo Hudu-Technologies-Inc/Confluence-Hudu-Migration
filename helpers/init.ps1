@@ -53,7 +53,27 @@ foreach ($folder in @($TmpOutputDir,$LogsDir,$ErroredItemsFolder)) {
     Get-ChildItem -Path "$folder" -File -Recurse -Force | Remove-Item -Force
 }
 
+
 $HAPImodulePath = "C:\Users\$env:USERNAME\Documents\GitHub\HuduAPI\HuduAPI\HuduAPI.psm1"
+$use_hudu_fork = $true
+
+
+if ($true -eq $use_hudu_fork) {
+    if (-not $(Test-Path $HAPImodulePath)) {
+        $dst = Split-Path -Path (Split-Path -Path $HAPImodulePath -Parent) -Parent
+        Write-Host "Using Lastest Master Branch of Hudu Fork for HuduAPI"
+        $zip = "$env:TEMP\huduapi.zip"
+        Invoke-WebRequest -Uri "https://github.com/Hudu-Technologies-Inc/HuduAPI/archive/refs/heads/master.zip" -OutFile $zip
+        Expand-Archive -Path $zip -DestinationPath $env:TEMP -Force 
+        $extracted = Join-Path $env:TEMP "HuduAPI-master" 
+        if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+        Move-Item -Path $extracted -Destination $dst 
+        Remove-Item $zip -Force
+    }
+} else {
+    Write-Host "Assuming PSGallery Module if not already locally cloned at $HAPImodulePath"
+}
+
 if (Test-Path $HAPImodulePath) {
     Import-Module $HAPImodulePath -Force
     Write-Host "Module imported from $HAPImodulePath"
@@ -61,7 +81,9 @@ if (Test-Path $HAPImodulePath) {
     foreach ($module in @('HuduAPI')) {if (Get-Module -ListAvailable -Name $module) 
         { Write-Host "Importing module, $module..."; Import-Module $module } else {Write-Host "Installing and importing module $module..."; Install-Module $module -Force -AllowClobber; Import-Module $module }
     }
+    Write-Host "Installed and imported HuduAPI from PSGallery"
 }
+
 
 Write-Host "Encoding Credentials for Confluence..."
 $encodedCreds = [System.Convert]::ToBase64String(
