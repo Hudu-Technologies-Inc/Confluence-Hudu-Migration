@@ -241,7 +241,7 @@ foreach ($page in $SourcePages) {
     #stub article
     if ($null -eq $page.CompanyId -or $page.CompanyId -eq 0) {
         printandlog -message "Stubbing global KB article" -Color yellow
-        $page.stub = $(New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)")
+        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)"
     } elseif ($page.CompanyId -lt 0) {
         printandlog -message "Skipping page/article transfer for $($page.title)" -Color Gray
         $RunSummary.Warnings+=@{
@@ -252,7 +252,7 @@ foreach ($page in $SourcePages) {
         continue
     } else {
         printandlog -message "Stubbing KB article for Hudu company ID: $($page.CompanyId)" -Color  Yellow
-        $page.stub =$( New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)" -CompanyId $($page.CompanyId))
+        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)" -CompanyId $($page.CompanyId)
     }
     PrintAndLog -message "Article $($page.title) Stubbed with id $($($page.stub).id); $($($page.stub) | ConvertTo-Json -Depth 3)" -Color Green
 
@@ -335,9 +335,11 @@ foreach ($page in $StubbedPages) {
                 PrintAndLog -Message "Uploading image: $($record.FileName) => record_id=$($($page.stub).id) record_type=Article" -Color Green
                 $upload=$null
                 if ($record.IsImage) {
-                    $upload = $((New-HuduPublicPhoto -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article').public_photo)
+                    $upload = New-HuduPublicPhoto -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
+                    $upload = $upload.public_photo ?? $upload
                 } else {
                     $upload = New-HuduUpload -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
+                    $upload = $upload.upload ?? $upload
                 }
                 $AllNewLinks.Add([PSCustomObject]@{
                     PageId        = $page.id
@@ -414,10 +416,11 @@ foreach ($page in $StubbedPages) {
     }
     try {
         if ($null -ne $($page.CompanyId) -and $($page.CompanyId) -ne -1) {
-            $page.HuduArticle = $(Set-HuduArticle -ArticleId $($page.stub).id -Content $FinalContents -name $($($page.title) ?? "Unknown Title") -CompanyId $($page.CompanyId)).Article
+            $page.HuduArticle = $(Set-HuduArticle -ArticleId $($page.stub).id -Content $FinalContents -name $($($page.title) ?? "Unknown Title") -CompanyId $($page.CompanyId))
         } else {
-            $page.HuduArticle = $(Set-HuduArticle -ArticleId $($page.stub).id -Content $FinalContents -name $($($page.title) ?? "Unknown Title")).Article
+            $page.HuduArticle = $(Set-HuduArticle -ArticleId $($page.stub).id -Content $FinalContents -name $($($page.title) ?? "Unknown Title"))
         }
+        $page.HuduArticle = $page.HuduArticle.article ?? $page.HuduArticle
         
     } catch {
         # Handle articles that are too large having an issue during file upload / linking
@@ -551,7 +554,7 @@ foreach ($id in $Article_Relinking.Keys) {
     }
     $relPage.ReplacedLinks = $(Get-LinksFromHTML -htmlContent $htmlContent -title $relPage.title -includeImages $false)
     $response = Set-HuduArticle -ArticleId $id -Content $htmlContent -Name $relPage.title
-    $relPage.HuduArticle = $response.Article
+    $relPage.HuduArticle = $response.Article ?? $response
     PrintAndLog -Message "Updated article [$($relPage.title)] with length: $($htmlContent.Length)" -Color Cyan
 
     # Optional: also update the Article_Relinking entry with new content
