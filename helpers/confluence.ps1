@@ -176,8 +176,10 @@ function New-HuduStubArticle {
     if ($CompanyId -ne $null -and $CompanyId -ne -1) {
         $params.CompanyId = $CompanyId
     }
+    $stub = (New-HuduArticle @params)
+    $stub = $stub.article ?? $stub
 
-    return (New-HuduArticle @params).article
+    return $stub
 }
 
 
