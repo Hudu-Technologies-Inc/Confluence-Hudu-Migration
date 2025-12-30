@@ -21,7 +21,6 @@ $project_workdir=$PSScriptRoot
 . ".\helpers\confluence.ps1"
 . ".\helpers\general.ps1"
 
-
 $ImageMap = @{}
 $ConfluenceToHuduUrlMap = @{}
 $Article_Relinking=@{}
@@ -341,6 +340,7 @@ foreach ($page in $StubbedPages) {
                     $upload = New-HuduUpload -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
                     $upload = $upload.upload ?? $upload
                 }
+                write-host "$($upload.slug)"
                 $AllNewLinks.Add([PSCustomObject]@{
                     PageId        = $page.id
                     PageTitle     = $page.title
@@ -350,8 +350,8 @@ foreach ($page in $StubbedPages) {
                 })
                 $normalizedFileName = $record.FileName.ToLowerInvariant()
                 $ImageMap[$normalizedFileName] = @{
-                    Id   = $upload.id
-                    Type = if ($record.IsImage) { 'image' } else { 'upload' }
+                    Id   = $upload.slug
+                    Type = if ($true -eq $record.IsImage) { 'image' } else { 'upload' }
                 }
 
                 $record.UploadResult    = $upload
