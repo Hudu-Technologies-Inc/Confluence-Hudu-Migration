@@ -134,7 +134,7 @@ function Invoke-ConfluenceAttachDownload {
         Write-Host "Saved attachment: $filename"
 
         $ext = [IO.Path]::GetExtension($filename).ToLower()
-        $isImage = $filename -match '\.(jpg|jpeg|png)$'
+        $isImage = $false
 
         $record = [PSCustomObject]@{
             FileName         = $filename
@@ -204,8 +204,8 @@ function Replace-ConfluenceAttachmentTags {
 
             if ($isImage) {
                 # Wrap image in link to itself
-                return "<a href='$imgUrl' target='_blank'><img src='$imgUrl' alt='$filename' /></a>"
-            } elseif ($filename.ToLower() -match '\.(gif|bmp|svg)$') {
+                return "<a href='$fileUrl' target='_blank'><img src='$fileUrl' alt='$filename' /></a>"
+            } elseif ($filename.ToLower() -match '\.(gif|bmp|svg|png|jpg|jpeg)$') {
                 return "<a href='$fileUrl' target='_blank'><img src='$fileUrl' alt='$filename' /></a>"
             } else {
                 return "<a href='$fileUrl'>$filename</a>"

@@ -21,7 +21,6 @@ $project_workdir=$PSScriptRoot
 . ".\helpers\confluence.ps1"
 . ".\helpers\general.ps1"
 
-
 $ImageMap = @{}
 $ConfluenceToHuduUrlMap = @{}
 $Article_Relinking=@{}
@@ -30,7 +29,7 @@ $RunSummary=@{
     CompletedStates=@()
     SetupInfo=@{
         HuduDestination     = $HuduBaseUrl
-        HuduMaxContentLength= 4500
+        HuduMaxContentLength= 100000
         ConfluenceSource    = $ConfluenceBaseUrl
         HuduVersion         = [version]$HuduAppInfo.version
         PowershellVersion   = [version]$PowershellVersion
@@ -302,7 +301,7 @@ foreach ($page in $StubbedPages) {
         [void]$TrackedAttachments.Add($record ?? [PSCustomObject]@{
             FileName         = $(Get-SafeFilename -Name $($record.title ?? "Title not present for page id $($page.id ?? 0)"))
             Extension        = [IO.Path]::GetExtension($record.title).ToLower()
-            IsImage          = $record.title.ToLower() -match '\.(jpg|jpeg|png)$'
+            IsImage          = $false
             PageId           = $($page.id)
             PageTitle        = $($page.title)
             SourceUrl        = "$ConfluenceBaseUrl$($record._links.download)"
@@ -334,13 +333,14 @@ foreach ($page in $StubbedPages) {
             try {
                 PrintAndLog -Message "Uploading image: $($record.FileName) => record_id=$($($page.stub).id) record_type=Article" -Color Green
                 $upload=$null
-                if ($record.IsImage) {
+                if ($true -eq $record.IsImage) {
                     $upload = New-HuduPublicPhoto -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
                     $upload = $upload.public_photo ?? $upload
                 } else {
                     $upload = New-HuduUpload -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
                     $upload = $upload.upload ?? $upload
                 }
+                write-host "$($upload.slug)"
                 $AllNewLinks.Add([PSCustomObject]@{
                     PageId        = $page.id
                     PageTitle     = $page.title
@@ -350,8 +350,8 @@ foreach ($page in $StubbedPages) {
                 })
                 $normalizedFileName = $record.FileName.ToLowerInvariant()
                 $ImageMap[$normalizedFileName] = @{
-                    Id   = $upload.id
-                    Type = if ($record.IsImage) { 'image' } else { 'upload' }
+                    Id   = $upload.slug
+                    Type = if ($true -eq $record.IsImage) { 'image' } else { 'upload' }
                 }
 
                 $record.UploadResult    = $upload
@@ -402,8 +402,8 @@ foreach ($page in $StubbedPages) {
 
     PrintAndLog "Populating Article: $($page.articlePreview) to $($($page.CompanyId) ?? 'Global KB') with relinked contents" -Color Green
 
-    if ($($page.updatedHtml).Length -gt $HUDU_MAX_DOCSIZE) {
-        PrintAndLog "Content Length Warning: Content, even after stripping bloat is too large. Safe-Maximum is $HUDU_MAX_DOCSIZE Characters, and this is $($($page.updatedHtml).length) chars long! Adding as attached document!"
+    if ($($page.updatedHtml).Length -gt $RunSummary.SetupInfo.HuduMaxContentLength) {
+        PrintAndLog "Content Length Warning: Content, even after stripping bloat is too large. Safe-Maximum is $($RunSummary.SetupInfo.HuduMaxContentLength) Characters, and this is $($($page.updatedHtml).length) chars long! Adding as attached document!"
         $htmlPath = Join-Path $TmpOutputDir -ChildPath ("LargeDoc_{0}.html" -f (Get-SafeFilename ([IO.Path]::GetFileNameWithoutExtension($($page.title)))))
         Set-Content -Path $htmlPath -Value $($page.updatedHtml) -Encoding UTF8
 
