@@ -134,7 +134,7 @@ function Invoke-ConfluenceAttachDownload {
         Write-Host "Saved attachment: $filename"
 
         $ext = [IO.Path]::GetExtension($filename).ToLower()
-        $isImage = $filename -match '\.(jpg|jpeg|png)$'
+        $isImage = $false
 
         $record = [PSCustomObject]@{
             FileName         = $filename
