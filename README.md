@@ -14,6 +14,10 @@ Ensure you have:
 - Confluence instance ready to transfer with API key on-hand, associated username (email)
 - Powershell 7.5.0 or later is reccomended for running this script
 
+> **Permissions Notice**
+>
+> Some scripts may require elevated permissions. If you encounter access-related errors, consider launching PowerShell (`pwsh`) with **Run as Administrator**.
+
 ## Starting
 
 It's reccomended to instantiate via dot-sourcingl, ie
