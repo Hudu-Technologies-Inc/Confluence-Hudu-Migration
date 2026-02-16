@@ -13,14 +13,18 @@ $HuduBaseURL = $HuduBaseURL ??
 $HuduAPIKey = $HuduAPIKey ?? "$(read-host "Please Enter Hudu API Key")"
 
 # ---------------------------------------
-# Confluence Variables
+# User-Entered Confluence Variables
 # ---------------------------------------
 $ConfluenceToken= $ConfluenceToken ?? "$(Read-Host "Please Enter Confluence Token")"
 $ConfluenceDomain = $ConfluenceDomain ?? "$(read-host "please enter your Confluence subdomain (e.g 'hudu-integrations' would be valid for 'https://www.hudu-integrations.atlassian.net'.)")"
+
+# these are used for various link replacement later on.
+$ConfluenceDomain = ($ConfluenceDomain -replace '^https?://','' -replace '/.*$','' -replace '\.atlassian\.net$','')
 $confluenceBase="$($ConfluenceDomain).atlassian.net"
 $ConfluenceDomainBase= "https://$confluenceBase"
 $ConfluenceBaseUrl ="$ConfluenceDomainBase/wiki"
-$Confluence_Username=$Confluence_Username ?? "$(read-host "please enter the username associated with your Confluence account / token")"
+$Confluence_Username=$Confluence_Username ?? "$(read-host 'please enter the username associated with your Confluence account / token [this should generally be your associated email address]')"
+@($ConfluenceDomain, $confluenceBase, $ConfluenceDomainBase, $ConfluenceBaseUrl) | ForEach-Object { Write-Host "Set Confluence variable: $_" -ForegroundColor Green }
 
 # ---------------------------------------
 # quick validation
@@ -106,7 +110,7 @@ if ($PowershellVersion -lt $requiredPowershellVersion) {
 }
 
 
-$RequiredHuduVersion = "2.37.1"
+$RequiredHuduVersion = "2.40.1"
 $HuduAppInfo = Get-HuduAppInfo
 $CurrentVersion = [version]$HuduAppInfo.version
 if ($CurrentVersion -lt [version]$RequiredHuduVersion) {
