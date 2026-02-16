@@ -10,3 +10,6 @@ logs\errored\*
 *.log
 *.json
 *.html
+!environment.example
+!*.example
+*environment*.ps1
