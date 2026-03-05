@@ -87,12 +87,12 @@ if ([int]$RunSummary.JobInfo.MigrationSource.Identifier -eq 0) {
     $SingleChosenSpace=$(Select-Object-From-List -Objects $AllSpaces - Message "From which single space would you like to migrate pages from?")  
     $RunSummary.JobInfo.Spaces.Add($SingleChosenSpace) | Out-Null
     $RunSummary.JobInfo.MigrationSource.OptionMessage="$($RunSummary.JobInfo.MigrationSource.OptionMessage) (space: $($SingleChosenSpace.name)/$($SingleChosenSpace.key))"
-    $SourcePages=$(GetAllPages -SpaceKey $SingleChosenSpace.key -SpaceName $SingleChosenSpace.name -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
+    $SourcePages=$(GetAllPages -SpaceKey $SingleChosenSpace.key -SpaceName $SingleChosenSpace.name -SpaceId $SingleChosenSpace.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
 } else {
     foreach ($space in $AllSpaces) {
         PrintAndLog -message "Obtaining Pages from space: $($space.name)/$($space.key)" -Color Blue
         $RunSummary.JobInfo.Spaces.Add($space) | Out-Null
-        $addedPages = $(GetAllPages -SpaceKey $space.key -SpaceName $space.name -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
+        $addedPages = $(GetAllPages -SpaceKey $space.key -SpaceName $space.name -SpaceId $space.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
         $SourcePages+=$addedPages
     }
 }
@@ -350,8 +350,8 @@ foreach ($page in $StubbedPages) {
                 })
                 $normalizedFileName = $record.FileName.ToLowerInvariant()
                 $ImageMap[$normalizedFileName] = @{
-                    Id   = $upload.slug
-                    Type = if ($true -eq $record.IsImage) { 'image' } else { 'upload' }
+                  Id   = $upload.id
+                  Type = if ($true -eq $record.IsImage) { 'image' } else { 'upload' }
                 }
 
                 $record.UploadResult    = $upload
@@ -600,3 +600,5 @@ $SummaryJson | ConvertTo-Json -Depth 15 | Out-File "$(join-path $LogsDir -ChildP
 
 # Print final state summary
 Write-Host "$($RunSummary.CompletedStates.Count): $($RunSummary.State) in $($RunSummary.SetupInfo.RunDuration) with $($RunSummary.Errors.Count) errors and $($RunSummary.Warnings.Count) warnings" -ForegroundColor Magenta
+
+

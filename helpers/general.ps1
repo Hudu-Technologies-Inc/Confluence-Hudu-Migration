@@ -236,7 +236,7 @@ function Get-LinksFromHTML {
 }
 function Get-SafeFilename {
     param([string]$Name,
-        [int]$MaxLength=25
+        [int]$MaxLength=100
     )
 
     # If there's a '?', take only the part before it
@@ -257,4 +257,5 @@ function Get-SafeFilename {
 
     return "$SafeName$SafeExt"
 }
+
 
