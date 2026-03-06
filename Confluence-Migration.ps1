@@ -218,6 +218,14 @@ if ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 0) {
 PrintAndLog -message "You've elected for this migration path: $($RunSummary.JobInfo.MigrationSource.OptionMessage) $($RunSummary.JobInfo.MigrationDest.OptionMessage)." -Color Yellow
 Read-Host "Press enter now or CTL+C / Close window to exit now!"
 
+# ── TITLE CACHE PRE-PASS ─────────────────────────────────────────────────────
+# Build a lookup of Confluence page ID -> title so Resolve-HuduFolder can
+# identify pages acting as folder containers without extra API calls.
+foreach ($page in $SourcePages) {
+    $script:TitleCache[$page.id] = $page.OriginalTitle
+}
+PrintAndLog "Title cache built: $($script:TitleCache.Count) entries" -Color Cyan
+
 $RunSummary.CompletedStates += "$($RunSummary.State) finished in $($($(Get-Date) - $RunSummary.SetupInfo.StartedAt).ToString())"
 $RunSummary.State="Stubbing articles"
 write-host "Part $($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta
@@ -237,6 +245,17 @@ foreach ($page in $SourcePages) {
         $page.CompanyId = $(Select-Object-From-List -message "Migrating Article: $($page.articlePreview ?? "no preview")... Which company to migrate into?" -objects $Attribution_Options).CompanyId
     }
 
+    # Resolve Hudu folder for this page (company-scoped migrations only)
+    $folderId = $null
+    if ($page.parentId -and $page.CompanyId -and $page.CompanyId -gt 0) {
+        $folderId = Resolve-HuduFolder `
+            -ParentId   $page.parentId `
+            -ParentType ($page.parentType ?? "page") `
+            -CompanyId  $page.CompanyId `
+            -AuthHeader "Basic $encodedCreds" `
+            -BaseUrl    $ConfluenceBaseUrl
+    }
+
     #stub article
     if ($null -eq $page.CompanyId -or $page.CompanyId -eq 0) {
         printandlog -message "Stubbing global KB article" -Color yellow
@@ -250,8 +269,8 @@ foreach ($page in $SourcePages) {
         $RunSummary.JobInfo.Skipped+=1
         continue
     } else {
-        printandlog -message "Stubbing KB article for Hudu company ID: $($page.CompanyId)" -Color  Yellow
-        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)" -CompanyId $($page.CompanyId)
+        printandlog -message "Stubbing KB article for Hudu company ID: $($page.CompanyId), folder: $($folderId ?? 'none')" -Color Yellow
+        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)" -CompanyId $($page.CompanyId) -FolderId $folderId
     }
     PrintAndLog -message "Article $($page.title) Stubbed with id $($($page.stub).id); $($($page.stub) | ConvertTo-Json -Depth 3)" -Color Green
 
@@ -600,5 +619,3 @@ $SummaryJson | ConvertTo-Json -Depth 15 | Out-File "$(join-path $LogsDir -ChildP
 
 # Print final state summary
 Write-Host "$($RunSummary.CompletedStates.Count): $($RunSummary.State) in $($RunSummary.SetupInfo.RunDuration) with $($RunSummary.Errors.Count) errors and $($RunSummary.Warnings.Count) warnings" -ForegroundColor Magenta
-
-

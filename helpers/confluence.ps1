@@ -1,6 +1,3 @@
-
-
-
 # Define some useful Functions 
 
 function Get-AttachmentsForPage {
@@ -187,7 +184,8 @@ function New-HuduStubArticle {
     param (
         [string]$Title,
         [string]$Content,
-        [nullable[int]]$CompanyId
+        [nullable[int]]$CompanyId,
+        [nullable[int]]$FolderId
     )
 
     $params = @{
@@ -197,10 +195,77 @@ function New-HuduStubArticle {
     if ($CompanyId -ne $null -and $CompanyId -ne -1) {
         $params.CompanyId = $CompanyId
     }
+    if ($FolderId -ne $null) {
+        $params.FolderId = $FolderId
+    }
     $stub = (New-HuduArticle @params)
     $stub = $stub.article ?? $stub
 
     return $stub
+}
+
+# ── FOLDER RESOLUTION ────────────────────────────────────────────────────────
+# FolderCache: Confluence parentId -> Hudu folder ID
+# TitleCache:  Confluence ID -> title (covers both pages and folders)
+$script:FolderCache = @{}
+$script:TitleCache  = @{}
+
+function Resolve-HuduFolder {
+    param (
+        [string]$ParentId,
+        [string]$ParentType,
+        [int]$CompanyId,
+        [string]$AuthHeader,
+        [string]$BaseUrl
+    )
+
+    if (-not $ParentId) { return $null }
+
+    # Already resolved this parent
+    if ($script:FolderCache.ContainsKey($ParentId)) {
+        return $script:FolderCache[$ParentId]
+    }
+
+    $title = $null
+
+# Check if parent ID is in title cache — if so, it's a page acting as container, not a folder
+    if ($script:TitleCache.ContainsKey($ParentId)) {
+        # Parent is a regular page acting as container — don't create a folder
+        PrintAndLog "  ℹ️  Parent '$($script:TitleCache[$ParentId])' is a page, not a folder — skipping folder assignment" -Color Gray
+        return $null
+    } elseif ($ParentType -eq "folder") {
+        # Fetch folder title from Confluence API
+        try {
+            $folderResp = Invoke-RestMethod `
+                -Uri     "$BaseUrl/api/v2/folders/$ParentId" `
+                -Headers @{ Authorization = $AuthHeader; Accept = "application/json" }
+            $title = $folderResp.title
+            $script:TitleCache[$ParentId] = $title
+        } catch {
+            PrintAndLog "  ⚠️  Could not fetch folder $ParentId from Confluence API — skipping folder assignment" -Color Yellow
+            return $null
+        }
+    } else {
+        # parentType is "page" but not in TitleCache — space root or orphan, skip
+        PrintAndLog "  ℹ️  Parent $ParentId is a page not in title cache — skipping folder assignment" -Color Gray
+        return $null
+    }
+
+    if (-not $title) {
+        PrintAndLog "  ⚠️  Could not resolve title for parent $ParentId — skipping folder assignment" -Color Yellow
+        return $null
+    }
+
+    try {
+        $folder = Initialize-HuduFolder -FolderPath @($title) -CompanyId $CompanyId
+        $folderId = $folder.id
+        $script:FolderCache[$ParentId] = $folderId
+        PrintAndLog "  📁 Folder '$title' (Confluence $ParentId) → Hudu folder ID $folderId" -Color Cyan
+        return $folderId
+    } catch {
+        PrintAndLog "  ⚠️  Initialize-HuduFolder failed for '$title' — $($_)" -Color Yellow
+        return $null
+    }
 }
 
 
