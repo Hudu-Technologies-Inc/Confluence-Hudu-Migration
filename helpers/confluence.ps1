@@ -210,6 +210,42 @@ function New-HuduStubArticle {
 $script:FolderCache = @{}
 $script:TitleCache  = @{}
 
+function Get-ConfluenceFolderPath {
+    param (
+        [string]$ParentId,
+        [string]$ParentType,
+        [string]$AuthHeader,
+        [string]$BaseUrl
+    )
+
+    $path        = @()
+    $currentId   = $ParentId
+    $currentType = $ParentType
+
+    while ($currentId -and $currentType -eq "folder") {
+        if ($script:TitleCache.ContainsKey($currentId)) {
+            # Title already known — prepend and stop (can't walk further up from cache alone)
+            $path = @($script:TitleCache[$currentId]) + $path
+            break
+        }
+        try {
+            $resp  = Invoke-RestMethod `
+                -Uri     "$BaseUrl/api/v2/folders/$currentId" `
+                -Headers @{ Authorization = $AuthHeader; Accept = "application/json" }
+            $title = $resp.title
+            $script:TitleCache[$currentId] = $title
+            $path        = @($title) + $path   # prepend so root comes first
+            $currentId   = $resp.parentId
+            $currentType = $resp.parentType
+        } catch {
+            PrintAndLog "  ⚠️  Could not fetch folder $currentId while building path — stopping" -Color Yellow
+            break
+        }
+    }
+
+    return $path
+}
+
 function Resolve-HuduFolder {
     param (
         [string]$ParentId,
@@ -226,44 +262,29 @@ function Resolve-HuduFolder {
         return $script:FolderCache[$ParentId]
     }
 
-    $title = $null
-
-# Check if parent ID is in title cache — if so, it's a page acting as container, not a folder
-    if ($script:TitleCache.ContainsKey($ParentId)) {
-        # Parent is a regular page acting as container — don't create a folder
-        PrintAndLog "  ℹ️  Parent '$($script:TitleCache[$ParentId])' is a page, not a folder — skipping folder assignment" -Color Gray
-        return $null
-    } elseif ($ParentType -eq "folder") {
-        # Fetch folder title from Confluence API
-        try {
-            $folderResp = Invoke-RestMethod `
-                -Uri     "$BaseUrl/api/v2/folders/$ParentId" `
-                -Headers @{ Authorization = $AuthHeader; Accept = "application/json" }
-            $title = $folderResp.title
-            $script:TitleCache[$ParentId] = $title
-        } catch {
-            PrintAndLog "  ⚠️  Could not fetch folder $ParentId from Confluence API — skipping folder assignment" -Color Yellow
-            return $null
-        }
-    } else {
-        # parentType is "page" but not in TitleCache — space root or orphan, skip
-        PrintAndLog "  ℹ️  Parent $ParentId is a page not in title cache — skipping folder assignment" -Color Gray
+    # Parent is a page, not a folder — skip
+    if ($script:TitleCache.ContainsKey($ParentId) -or $ParentType -ne "folder") {
+        $label = if ($script:TitleCache.ContainsKey($ParentId)) { "'$($script:TitleCache[$ParentId])'" } else { $ParentId }
+        PrintAndLog "  ℹ️  Parent $label is a page, not a folder — skipping folder assignment" -Color Gray
         return $null
     }
 
-    if (-not $title) {
-        PrintAndLog "  ⚠️  Could not resolve title for parent $ParentId — skipping folder assignment" -Color Yellow
+    # Build full folder path by walking up the Confluence folder tree
+    $path = Get-ConfluenceFolderPath -ParentId $ParentId -ParentType $ParentType -AuthHeader $AuthHeader -BaseUrl $BaseUrl
+
+    if (-not $path -or $path.Count -eq 0) {
+        PrintAndLog "  ⚠️  Could not resolve folder path for $ParentId — skipping" -Color Yellow
         return $null
     }
 
     try {
-        $folder = Initialize-HuduFolder -FolderPath @($title) -CompanyId $CompanyId
+        $folder   = Initialize-HuduFolder -FolderPath $path -CompanyId $CompanyId
         $folderId = $folder.id
         $script:FolderCache[$ParentId] = $folderId
-        PrintAndLog "  📁 Folder '$title' (Confluence $ParentId) → Hudu folder ID $folderId" -Color Cyan
+        PrintAndLog "  📁 '$($path -join " → ")' → Hudu folder ID $folderId" -Color Cyan
         return $folderId
     } catch {
-        PrintAndLog "  ⚠️  Initialize-HuduFolder failed for '$title' — $($_)" -Color Yellow
+        PrintAndLog "  ⚠️  Initialize-HuduFolder failed for '$($path -join " / ")' — $($_)" -Color Yellow
         return $null
     }
 }
