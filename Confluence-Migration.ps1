@@ -565,12 +565,14 @@ foreach ($id in $Article_Relinking.Keys) {
         PrintAndLog -Message "Replaced page/$($entry.Page.id) → $($entry.HuduArticle.url)" -Color Green
     }
 
+# fixed so that links containing parentheses or other special characters are properly escaped in regex replacement
     foreach ($sourcePage in $StubbedPages) {
-        $htmlContent = $htmlContent -replace $sourcePage.title, "<a href='$($sourcePage.HuduArticle.url ?? $sourcePage.stub.url)'>$($sourcePage.title)</a>"
+        $htmlContent = $htmlContent -replace [regex]::Escape($sourcePage.title), "<a href='$($sourcePage.HuduArticle.url ?? $sourcePage.stub.url)'>$($sourcePage.title)</a>"
         foreach ($baselink in $sourcePage.BaseLinks) {
-            $htmlContent = $htmlContent -replace $baselink, $($sourcePage.HuduArticle.url ?? $sourcePage.stub.url)
+            $htmlContent = $htmlContent -replace [regex]::Escape($baselink), $($sourcePage.HuduArticle.url ?? $sourcePage.stub.url)
         }
     }
+
     $relPage.ReplacedLinks = $(Get-LinksFromHTML -htmlContent $htmlContent -title $relPage.title -includeImages $false)
     $response = Set-HuduArticle -ArticleId $id -Content $htmlContent -Name $relPage.title
     $relPage.HuduArticle = $response.Article ?? $response
