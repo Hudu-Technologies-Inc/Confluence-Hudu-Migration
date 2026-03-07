@@ -226,6 +226,14 @@ foreach ($page in $SourcePages) {
 }
 PrintAndLog "Title cache built: $($script:TitleCache.Count) entries" -Color Cyan
 
+$script:SpaceHomepageId = if ($SingleChosenSpace) {
+    $spaceDetail = Invoke-RestMethod -Uri "$ConfluenceBaseUrl/api/v2/spaces/$($SingleChosenSpace.Id)" `
+        -Headers @{ Authorization = "Basic $encodedCreds"; Accept = "application/json" }
+    $spaceDetail.homepageId
+} else { $null }
+PrintAndLog "Space homepage ID: $($script:SpaceHomepageId ?? 'none — all-spaces mode or not found')" -Color Cyan
+
+
 $RunSummary.CompletedStates += "$($RunSummary.State) finished in $($($(Get-Date) - $RunSummary.SetupInfo.StartedAt).ToString())"
 $RunSummary.State="Stubbing articles"
 write-host "Part $($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta

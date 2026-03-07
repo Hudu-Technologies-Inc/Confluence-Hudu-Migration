@@ -207,38 +207,51 @@ function New-HuduStubArticle {
 # ── FOLDER RESOLUTION ────────────────────────────────────────────────────────
 # FolderCache: Confluence parentId -> Hudu folder ID
 # TitleCache:  Confluence ID -> title (covers both pages and folders)
-$script:FolderCache = @{}
-$script:TitleCache  = @{}
+# SpaceHomepageId: set per-space before migration loop so we can exclude it from paths
+$script:FolderCache     = @{}
+$script:TitleCache      = @{}
+$script:SpaceHomepageId = $null
 
 function Get-ConfluenceFolderPath {
     param (
-        [string]$ParentId,
-        [string]$ParentType,
+        [string]$StartId,      # the page/folder whose ancestors we want
+        [string]$StartType,    # "page" or "folder"
         [string]$AuthHeader,
         [string]$BaseUrl
     )
 
-    $path        = @()
-    $currentId   = $ParentId
-    $currentType = $ParentType
+    $path      = @()
+    $currentId = $StartId
+    $currentType = $StartType
 
-    while ($currentId -and $currentType -eq "folder") {
+    while ($currentId) {
+        # Stop at the space homepage — don't include it in the path
+        if ($currentId -eq $script:SpaceHomepageId) { break }
+
+        # Return from cache if we've seen this node before
         if ($script:TitleCache.ContainsKey($currentId)) {
-            # Title already known — prepend and stop (can't walk further up from cache alone)
             $path = @($script:TitleCache[$currentId]) + $path
             break
         }
+
         try {
-            $resp  = Invoke-RestMethod `
-                -Uri     "$BaseUrl/api/v2/folders/$currentId" `
-                -Headers @{ Authorization = $AuthHeader; Accept = "application/json" }
+            if ($currentType -eq "folder") {
+                $resp = Invoke-RestMethod `
+                    -Uri     "$BaseUrl/api/v2/folders/$currentId" `
+                    -Headers @{ Authorization = $AuthHeader; Accept = "application/json" }
+            } else {
+                $resp = Invoke-RestMethod `
+                    -Uri     "$BaseUrl/api/v2/pages/$currentId" `
+                    -Headers @{ Authorization = $AuthHeader; Accept = "application/json" }
+            }
+
             $title = $resp.title
             $script:TitleCache[$currentId] = $title
             $path        = @($title) + $path   # prepend so root comes first
             $currentId   = $resp.parentId
             $currentType = $resp.parentType
         } catch {
-            PrintAndLog "  ⚠️  Could not fetch folder $currentId while building path — stopping" -Color Yellow
+            PrintAndLog "  ⚠️  Could not fetch $currentType $currentId while building path — stopping" -Color Yellow
             break
         }
     }
@@ -257,20 +270,16 @@ function Resolve-HuduFolder {
 
     if (-not $ParentId) { return $null }
 
+    # Space homepage as parent = top-level page, no folder needed
+    if ($ParentId -eq $script:SpaceHomepageId) { return $null }
+
     # Already resolved this parent
     if ($script:FolderCache.ContainsKey($ParentId)) {
         return $script:FolderCache[$ParentId]
     }
 
-    # Parent is a page, not a folder — skip
-    if ($script:TitleCache.ContainsKey($ParentId) -or $ParentType -ne "folder") {
-        $label = if ($script:TitleCache.ContainsKey($ParentId)) { "'$($script:TitleCache[$ParentId])'" } else { $ParentId }
-        PrintAndLog "  ℹ️  Parent $label is a page, not a folder — skipping folder assignment" -Color Gray
-        return $null
-    }
-
-    # Build full folder path by walking up the Confluence folder tree
-    $path = Get-ConfluenceFolderPath -ParentId $ParentId -ParentType $ParentType -AuthHeader $AuthHeader -BaseUrl $BaseUrl
+    # Build full path by walking up through pages and/or folders
+    $path = Get-ConfluenceFolderPath -StartId $ParentId -StartType $ParentType -AuthHeader $AuthHeader -BaseUrl $BaseUrl
 
     if (-not $path -or $path.Count -eq 0) {
         PrintAndLog "  ⚠️  Could not resolve folder path for $ParentId — skipping" -Color Yellow
