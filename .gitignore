@@ -1,15 +1,18 @@
-tmp
-tmp/*
-*/temp/*
-temp
-temp\*
-*\temp\*
-*ConfluenceTransfer.log
-logs
-logs\errored\*
-*.log
-*.json
-*.html
-!environment.example
-!*.example
-*environment*.ps1
+# Temp and output dirs
+tmp/
+logs/
+
+# PowerShell
+*.ps1xml
+
+# Credentials / secrets
+*.cred
+*.key
+secrets.ps1
+init-local.ps1
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
