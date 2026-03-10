@@ -415,19 +415,20 @@ function Strip-ConfluenceBloat {
     $Html = [regex]::Replace($Html, '<ri:[^>]+?>', '', 'Singleline')
     $Html = [regex]::Replace($Html, '<ri:[^>]+?/>', '', 'Singleline')
 
-    # Convert <ac:task> blocks into bullet list items
-    $html = [regex]::Replace($html, '<ac:task>(.*?)<ac:task-body>(.*?)<\/ac:task-body>.*?<\/ac:task>', {
+    # Convert <ac:task-list> wrapper into <ul>, preserving contents
+    $html = [regex]::Replace($html, '<ac:task-list>(.*?)<\/ac:task-list>', {
         param($match)
-        $taskBody = $match.Groups[2].Value
-        # Optional: strip paragraph tags
-        $taskBody = $taskBody -replace '<\/?p>', ''
-        return "<li>☐ $taskBody</li>"
+        return "<ul>$($match.Groups[1].Value)</ul>"
     }, 'Singleline')
 
-    # Wrap the resulting tasks in a <ul> block
-    if ($html -match '<li>☐') {
-        $html = $html -replace '(<li>☐.*?</li>)', '<ul>$1</ul>'
-    }
+    # Convert <ac:task> blocks — handles task-id and task-status fields before task-body
+    $html = [regex]::Replace($html, '<ac:task>.*?<ac:task-status>(.*?)<\/ac:task-status>\s*<ac:task-body>(.*?)<\/ac:task-body>.*?<\/ac:task>', {
+        param($match)
+        $status = $match.Groups[1].Value.Trim()
+        $taskBody = $match.Groups[2].Value -replace '<\/?p>', ''
+        $checkbox = if ($status -eq 'complete') { '☑' } else { '☐' }
+        return "<li>$checkbox $taskBody</li>"
+    }, 'Singleline')
 
     # Remove empty paragraphs
     $Html = [regex]::Replace($Html, '<p>\s*</p>', '', 'Singleline')
