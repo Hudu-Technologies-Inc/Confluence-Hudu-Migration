@@ -420,7 +420,7 @@ foreach ($page in $StubbedPages) {
     Save-HtmlSnapshot -PageId $page.id -Title $page.title -Content $page.rawContent -Suffix "before" -OutDir $TmpOutputDir
 
     PrintAndLog -Message "Stripping bloat for $($page.title)" -Color Yellow
-    # $page.updatedHtml = Strip-ConfluenceBloat -Html $page.rawContent ?? "no content"
+    $page.updatedHtml = Strip-ConfluenceBloat -Html $page.rawContent
     $page.updatedHtml = Replace-ConfluenceAttachmentTags -Html $page.updatedHtml -ImageMap $ImageMap -HuduBaseUrl $HuduBaseUrl
     $page.charsTrimmed =  $page.rawContent.length - $($page.updatedHtml).length
     PrintAndLog -Message "Removed $($page.charsTrimmed) characters of bloat from $($page.title)" -Color Green

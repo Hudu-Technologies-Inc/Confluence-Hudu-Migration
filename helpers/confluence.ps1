@@ -405,7 +405,51 @@ function Get-ConfluenceLinks {
 function Strip-ConfluenceBloat {
     param([string]$Html)
 
-    # Remove all <ac:*>...</ac:*>
+    # ── TASK LISTS ────────────────────────────────────────────────────────────
+    # MUST run before the generic <ac:*> stripper below.
+    #
+    # Handles:
+    #   - <ac:task-list> with optional attributes (ac:task-list-id etc.)
+    #   - <ac:task> items with optional/empty <ac:task-body>
+    #   - Multiple task lists in a single page
+    #
+    # Produces: <ul><li>&#x2610; task text</li>...</ul>
+
+    $Html = [regex]::Replace($Html, '<ac:task-list[^>]*>(.*?)</ac:task-list>', {
+        param($listMatch)
+        $inner = $listMatch.Groups[1].Value
+
+        # Convert each ac:task — task-body is optional (some tasks are empty)
+        $inner = [regex]::Replace($inner, '<ac:task>.*?<ac:task-status>(.*?)</ac:task-status>(.*?)</ac:task>', {
+            param($m)
+            $status    = $m.Groups[1].Value.Trim()
+            $bodyBlock = $m.Groups[2].Value
+
+            # Extract body text if present
+            $body = ''
+            if ($bodyBlock -match '<ac:task-body>(.*?)</ac:task-body>') {
+                $body = $Matches[1]
+                $body = $body -replace '<span[^>]*>', '' -replace '</span>', ''
+                $body = $body -replace '</?p>', ''
+                $body = $body.Trim()
+            }
+
+            # Skip empty tasks entirely
+            if (-not $body) { return '' }
+
+            $checkbox = if ($status -eq 'complete') { '&#x2611;' } else { '&#x2610;' }
+            return "<li>$checkbox $body</li>"
+        }, 'Singleline')
+
+        # Only emit a <ul> if there are actual list items
+        $inner = $inner.Trim()
+        if ($inner) { return "<ul>`n$inner`n</ul>" } else { return '' }
+    }, 'Singleline')
+
+    # ── GENERIC AC / RI TAG REMOVAL ───────────────────────────────────────────
+    # Safe to run now that task lists have been converted above.
+
+    # Remove all remaining <ac:*>...</ac:*>
     $Html = [regex]::Replace($Html, '<ac:[^>]+>.*?</ac:[^>]+>', '', 'Singleline')
 
     # Remove self-closing <ac:... />
@@ -415,44 +459,34 @@ function Strip-ConfluenceBloat {
     $Html = [regex]::Replace($Html, '<ri:[^>]+?>', '', 'Singleline')
     $Html = [regex]::Replace($Html, '<ri:[^>]+?/>', '', 'Singleline')
 
-    # Convert <ac:task-list> wrapper into <ul>, preserving contents
-    $html = [regex]::Replace($html, '<ac:task-list>(.*?)<\/ac:task-list>', {
-        param($match)
-        return "<ul>$($match.Groups[1].Value)</ul>"
-    }, 'Singleline')
-
-    # Convert <ac:task> blocks — handles task-id and task-status fields before task-body
-    $html = [regex]::Replace($html, '<ac:task>.*?<ac:task-status>(.*?)<\/ac:task-status>\s*<ac:task-body>(.*?)<\/ac:task-body>.*?<\/ac:task>', {
-        param($match)
-        $status = $match.Groups[1].Value.Trim()
-        $taskBody = $match.Groups[2].Value -replace '<\/?p>', ''
-        $checkbox = if ($status -eq 'complete') { '☑' } else { '☐' }
-        return "<li>$checkbox $taskBody</li>"
-    }, 'Singleline')
+    # ── CLEANUP ───────────────────────────────────────────────────────────────
 
     # Remove empty paragraphs
     $Html = [regex]::Replace($Html, '<p>\s*</p>', '', 'Singleline')
-    if ($Html -match '/wikihttps://') {
-        $Html = $Html -replace '/wikihttps://', 'https://'
-    }
+
     # Remove placeholders
-    $html = $html -replace '<ac:placeholder>.*?<\/ac:placeholder>', ''
+    $Html = $Html -replace '<ac:placeholder>.*?<\/ac:placeholder>', ''
 
-    # Strip empty paragraphs
-    $html = $html -replace '<li>\s*<p\s*/>\s*</li>', ''
-    $html = $html -replace '<li>\s*<p><br\s*/?></p>\s*</li>', ''
-    # Remove empty rows
-    $html = $html -replace '<tr>(\s*<td>(<p\s*/>|<p><br\s*/?></p>)</td>\s*)+</tr>', ''
-    $html = $html -replace '<tr>(\s*<td>(<p\s*\/>|<p><br\s*\/?><\/p>)<\/td>\s*)+</tr>', ''
-    # Emojis to Unicode
-    $html = $html -replace '<ac:emoticon[^>]*?ac:emoji-fallback="(.*?)"[^>]*>', '$1'
-    # Strip atlassian structured doc bloc
-    $html = $html -replace '<ac:adf-extension>.*?</ac:adf-extension>', ''
-    # Remove atlassian boilerplate headers
-    $html = $html -replace '<h2>.*?(Date|Participants|Goals|Discussion topics|Decisions).*?</h2>', ''
+    # Strip empty list items
+    $Html = $Html -replace '<li>\s*<p\s*/>\s*</li>', ''
+    $Html = $Html -replace '<li>\s*<p><br\s*/?></p>\s*</li>', ''
 
-    $html = $html -replace '/wikihttps://', 'https://'
-    $htmlContent = $htmlContent -replace "https://$ConfluenceDomain.atlassian.net/wikihttps://", 'https://'
+    # Remove empty table rows
+    $Html = $Html -replace '<tr>(\s*<td>(<p\s*/>|<p><br\s*/?></p>)</td>\s*)+</tr>', ''
+    $Html = $Html -replace '<tr>(\s*<td>(<p\s*\/>|<p><br\s*\/?><\/p>)<\/td>\s*)+</tr>', ''
+
+    # Emojis to Unicode fallback character
+    $Html = $Html -replace '<ac:emoticon[^>]*?ac:emoji-fallback="(.*?)"[^>]*>', '$1'
+
+    # Strip Atlassian ADF extension blocks
+    $Html = $Html -replace '<ac:adf-extension>.*?</ac:adf-extension>', ''
+
+    # Remove Atlassian boilerplate meeting headers
+    $Html = $Html -replace '<h2>.*?(Date|Participants|Goals|Discussion topics|Decisions).*?</h2>', ''
+
+    # Fix malformed URLs produced by Confluence link rewriting
+    $Html = $Html -replace '/wikihttps://', 'https://'
+    $Html = $Html -replace "https://$ConfluenceDomain\.atlassian\.net/wikihttps://", 'https://'
 
     return $Html
 }
