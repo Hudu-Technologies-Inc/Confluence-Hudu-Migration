@@ -413,7 +413,7 @@ function Strip-ConfluenceBloat {
     #   - <ac:task> items with optional/empty <ac:task-body>
     #   - Multiple task lists in a single page
     #
-    # Produces: <ul><li>&#x2610; task text</li>...</ul>
+    # Produces: <p>☐ task text</p> (one paragraph per task, no list wrapper)
 
     $Html = [regex]::Replace($Html, '<ac:task-list[^>]*>(.*?)</ac:task-list>', {
         param($listMatch)
@@ -437,13 +437,13 @@ function Strip-ConfluenceBloat {
             # Skip empty tasks entirely
             if (-not $body) { return '' }
 
-            $checkbox = if ($status -eq 'complete') { '&#x2611;' } else { '&#x2610;' }
-            return "<li>$checkbox $body</li>"
+            $checkbox = if ($status -eq 'complete') { '☑' } else { '☐' }
+            return "<p>$checkbox $body</p>"
         }, 'Singleline')
 
-        # Only emit a <ul> if there are actual list items
+        # Only emit content if there are actual tasks
         $inner = $inner.Trim()
-        if ($inner) { return "<ul>`n$inner`n</ul>" } else { return '' }
+        if ($inner) { return $inner } else { return '' }
     }, 'Singleline')
 
     # ── GENERIC AC / RI TAG REMOVAL ───────────────────────────────────────────
