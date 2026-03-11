@@ -323,6 +323,8 @@ function Replace-ConfluenceAttachmentTags {
                 return "<a href='$publicPhotoUrl' target='_blank'><img src='$publicPhotoUrl' alt='$filename' /></a>"
             } elseif ($filename.ToLower() -match '\.(gif|bmp|svg|png|jpg|jpeg)$') {
                 return "<a href='$publicPhotoUrl' target='_blank'><img src='$publicPhotoUrl' alt='$filename' /></a>"
+            } elseif ($filename.ToLower() -match '\.(mp4|mov|avi|mkv|webm)$') {
+                return "<p><em>📎 Video attachment: $filename — see Files in the sidebar to download and play</em></p>"
             } else {
                 return "<a href='$fileUrl'>$filename</a>"
             }
