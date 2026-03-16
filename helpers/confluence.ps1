@@ -1,6 +1,3 @@
-
-
-
 # Define some useful Functions 
 
 function Get-AttachmentsForPage {
@@ -18,14 +15,14 @@ function Get-AttachmentsForPage {
         $uri = "$BaseUrl/rest/api/content/$PageId/child/attachment" +
                "?limit=$limit&start=$start&expand=version,metadata"
 
-        $response = Invoke-RestMethod -Uri $uri -Headers @{
+        $attachResponse = Invoke-RestMethod -Uri $uri -Headers @{
             Authorization = $AuthHeader
             Accept        = 'application/json'
         }
 
-        $AllAttachments += $response.results
+        $AllAttachments += $attachResponse.results
         $start += $limit
-    } while ($response.size -eq $limit)
+    } while ($attachResponse.size -eq $limit)
 
     return $AllAttachments
 }
@@ -48,11 +45,12 @@ function GetAllSpaces {
                     Status        = $_.status
                     OptionMessage = $_.key
                     Key           = $_.key
+                    Id            = $_.id
                 }
             }
             # Check if there is a next page
             if ($response._links.next) {
-                $spacesUrl = "${baseUrl}${response._links.next}"
+                $spacesUrl = "$baseUrl$($response._links.next)"
             } else {
                 $spacesUrl = $null
             }
@@ -75,13 +73,19 @@ function GetAllPages {
         [string]$SpaceKey,
         [string]$SpaceName,
         [string]$authHeader,
+        [string]$SpaceId = "",
         [string]$ContentType = "page"
     )
 
     $AllPages = @()
-    $start = 0
     $limit = 25
-    $pagesUrl = "$baseUrl/rest/api/content?spaceKey=$SpaceKey&type=$ContentType&expand=body.storage,version&_limit=$limit&start=$start"
+
+    # Use v2 API if SpaceId provided, fall back to v1 if not
+    if ($SpaceId -ne "") {
+        $pagesUrl = "$baseUrl/api/v2/spaces/$SpaceId/pages?limit=$limit&body-format=storage"
+    } else {
+        $pagesUrl = "$baseUrl/rest/api/content?spaceKey=$SpaceKey&type=$ContentType&expand=body.storage,version&limit=$limit"
+    }
 
     PrintAndLog -message "Retrieving Confluence content from space '$SpaceKey'..."
 
@@ -94,18 +98,31 @@ function GetAllPages {
         }
 
         if ($response.results -and $response.results.Count -gt 0) {
-            $AllPages += $response.results
-
             foreach ($page in $response.results) {
-                $page | Add-Member -NotePropertyName FullUrl -NotePropertyValue "$baseUrl$($page._links.webui)" -Force
+                # v2 API returns body differently — normalize to v1 shape
+                if ($SpaceId -ne "" -and $page.body -and $page.body.storage) {
+                    # already in correct shape — body.storage.value exists
+                } elseif ($SpaceId -ne "" -and -not $page.body) {
+                    # v2 sometimes needs body fetched separately if missing
+                    $pageDetail = Invoke-RestMethod -Uri "$baseUrl/api/v2/pages/$($page.id)?body-format=storage" -Method GET -Headers @{
+                        "Authorization" = $authHeader
+                        "Accept"        = "application/json"
+                    }
+                    $page | Add-Member -NotePropertyName body -NotePropertyValue $pageDetail.body -Force
+                }
+
+                $page | Add-Member -NotePropertyName FullUrl  -NotePropertyValue "$baseUrl$($page._links.webui)" -Force
                 $page | Add-Member -NotePropertyName SpaceKey -NotePropertyValue "$SpaceKey" -Force
                 $page | Add-Member -NotePropertyName SpaceName -NotePropertyValue "$SpaceName" -Force
+                $AllPages += $page
             }
         }
 
-        # Update URL for next page if available
-        if ($response._links.next) {
-            $pagesUrl = "$baseUrl$response._links.next"
+        # Pagination — v2 cursor-based, v1 offset-based
+        $nextPath = $response._links.next
+        if ($nextPath) {
+            $domain = $baseUrl -replace '/wiki$', ''
+            $pagesUrl = if ($nextPath.StartsWith("/wiki")) { "$domain$nextPath" } else { "$baseUrl$nextPath" }
         } else {
             $pagesUrl = $null
         }
@@ -134,7 +151,8 @@ function Invoke-ConfluenceAttachDownload {
         Write-Host "Saved attachment: $filename"
 
         $ext = [IO.Path]::GetExtension($filename).ToLower()
-        $isImage = $false
+        $imageExtensions = @('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg')
+        $isImage = $imageExtensions -contains $ext
 
         $record = [PSCustomObject]@{
             FileName         = $filename
@@ -166,7 +184,8 @@ function New-HuduStubArticle {
     param (
         [string]$Title,
         [string]$Content,
-        [nullable[int]]$CompanyId
+        [nullable[int]]$CompanyId,
+        [nullable[int]]$FolderId
     )
 
     $params = @{
@@ -176,10 +195,107 @@ function New-HuduStubArticle {
     if ($CompanyId -ne $null -and $CompanyId -ne -1) {
         $params.CompanyId = $CompanyId
     }
+    if ($FolderId -ne $null) {
+        $params.FolderId = $FolderId
+    }
     $stub = (New-HuduArticle @params)
     $stub = $stub.article ?? $stub
 
     return $stub
+}
+
+# ── FOLDER RESOLUTION ────────────────────────────────────────────────────────
+# FolderCache: Confluence parentId -> Hudu folder ID
+# TitleCache:  Confluence ID -> title (covers both pages and folders)
+# SpaceHomepageId: set per-space before migration loop so we can exclude it from paths
+$script:FolderCache     = @{}
+$script:TitleCache      = @{}
+$script:SpaceHomepageId = $null
+
+function Get-ConfluenceFolderPath {
+    param (
+        [string]$StartId,      # the page/folder whose ancestors we want
+        [string]$StartType,    # "page" or "folder"
+        [string]$AuthHeader,
+        [string]$BaseUrl
+    )
+
+    $path      = @()
+    $currentId = $StartId
+    $currentType = $StartType
+
+    while ($currentId) {
+        # Stop at the space homepage — don't include it in the path
+        if ($currentId -eq $script:SpaceHomepageId) { break }
+
+        # Return from cache if we've seen this node before
+        if ($script:TitleCache.ContainsKey($currentId)) {
+            $path = @($script:TitleCache[$currentId]) + $path
+            break
+        }
+
+        try {
+            if ($currentType -eq "folder") {
+                $resp = Invoke-RestMethod `
+                    -Uri     "$BaseUrl/api/v2/folders/$currentId" `
+                    -Headers @{ Authorization = $AuthHeader; Accept = "application/json" }
+            } else {
+                $resp = Invoke-RestMethod `
+                    -Uri     "$BaseUrl/api/v2/pages/$currentId" `
+                    -Headers @{ Authorization = $AuthHeader; Accept = "application/json" }
+            }
+
+            $title = $resp.title
+            $script:TitleCache[$currentId] = $title
+            $path        = @($title) + $path   # prepend so root comes first
+            $currentId   = $resp.parentId
+            $currentType = $resp.parentType
+        } catch {
+            PrintAndLog "  ⚠️  Could not fetch $currentType $currentId while building path — stopping" -Color Yellow
+            break
+        }
+    }
+
+    return $path
+}
+
+function Resolve-HuduFolder {
+    param (
+        [string]$ParentId,
+        [string]$ParentType,
+        [int]$CompanyId,
+        [string]$AuthHeader,
+        [string]$BaseUrl
+    )
+
+    if (-not $ParentId) { return $null }
+
+    # Space homepage as parent = top-level page, no folder needed
+    if ($ParentId -eq $script:SpaceHomepageId) { return $null }
+
+    # Already resolved this parent
+    if ($script:FolderCache.ContainsKey($ParentId)) {
+        return $script:FolderCache[$ParentId]
+    }
+
+    # Build full path by walking up through pages and/or folders
+    $path = Get-ConfluenceFolderPath -StartId $ParentId -StartType $ParentType -AuthHeader $AuthHeader -BaseUrl $BaseUrl
+
+    if (-not $path -or $path.Count -eq 0) {
+        PrintAndLog "  ⚠️  Could not resolve folder path for $ParentId — skipping" -Color Yellow
+        return $null
+    }
+
+    try {
+        $folder   = Initialize-HuduFolder -FolderPath $path -CompanyId $CompanyId
+        $folderId = $folder.id
+        $script:FolderCache[$ParentId] = $folderId
+        PrintAndLog "  📁 '$($path -join " → ")' → Hudu folder ID $folderId" -Color Cyan
+        return $folderId
+    } catch {
+        PrintAndLog "  ⚠️  Initialize-HuduFolder failed for '$($path -join " / ")' — $($_)" -Color Yellow
+        return $null
+    }
 }
 
 
@@ -190,7 +306,7 @@ function Replace-ConfluenceAttachmentTags {
         [string]$HuduBaseUrl
     )
 
-    # Handle <ac:image><ri:attachment /></ac:image>
+ # Handle <ac:image><ri:attachment /></ac:image>
     $imagePattern = '<ac:image[^>]*?>\s*<ri:attachment\s+ri:filename="([^"]+)"[^>]*?\/>\s*<\/ac:image>'
     $Html = [regex]::Replace($Html, $imagePattern, {
         param($match)
@@ -199,14 +315,14 @@ function Replace-ConfluenceAttachmentTags {
             $mapEntry = $ImageMap[$filename]
             $id = $mapEntry.Id
             $isImage = $mapEntry.Type -eq 'image'
-            $imgUrl = "$HuduBaseUrl/public_photo/$id"
+
+            $publicPhotoUrl = "$HuduBaseUrl/public_photo/$id"
             $fileUrl = "$HuduBaseUrl/file/$id"
 
             if ($isImage) {
-                # Wrap image in link to itself
-                return "<a href='$fileUrl' target='_blank'><img src='$fileUrl' alt='$filename' /></a>"
+                return "<a href='$publicPhotoUrl' target='_blank'><img src='$publicPhotoUrl' alt='$filename' /></a>"
             } elseif ($filename.ToLower() -match '\.(gif|bmp|svg|png|jpg|jpeg)$') {
-                return "<a href='$fileUrl' target='_blank'><img src='$fileUrl' alt='$filename' /></a>"
+                return "<a href='$publicPhotoUrl' target='_blank'><img src='$publicPhotoUrl' alt='$filename' /></a>"
             } else {
                 return "<a href='$fileUrl'>$filename</a>"
             }

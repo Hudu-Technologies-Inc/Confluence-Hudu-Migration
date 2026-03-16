@@ -87,12 +87,12 @@ if ([int]$RunSummary.JobInfo.MigrationSource.Identifier -eq 0) {
     $SingleChosenSpace=$(Select-Object-From-List -Objects $AllSpaces - Message "From which single space would you like to migrate pages from?")  
     $RunSummary.JobInfo.Spaces.Add($SingleChosenSpace) | Out-Null
     $RunSummary.JobInfo.MigrationSource.OptionMessage="$($RunSummary.JobInfo.MigrationSource.OptionMessage) (space: $($SingleChosenSpace.name)/$($SingleChosenSpace.key))"
-    $SourcePages=$(GetAllPages -SpaceKey $SingleChosenSpace.key -SpaceName $SingleChosenSpace.name -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
+    $SourcePages=$(GetAllPages -SpaceKey $SingleChosenSpace.key -SpaceName $SingleChosenSpace.name -SpaceId $SingleChosenSpace.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
 } else {
     foreach ($space in $AllSpaces) {
         PrintAndLog -message "Obtaining Pages from space: $($space.name)/$($space.key)" -Color Blue
         $RunSummary.JobInfo.Spaces.Add($space) | Out-Null
-        $addedPages = $(GetAllPages -SpaceKey $space.key -SpaceName $space.name -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
+        $addedPages = $(GetAllPages -SpaceKey $space.key -SpaceName $space.name -SpaceId $space.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
         $SourcePages+=$addedPages
     }
 }
@@ -218,6 +218,22 @@ if ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 0) {
 PrintAndLog -message "You've elected for this migration path: $($RunSummary.JobInfo.MigrationSource.OptionMessage) $($RunSummary.JobInfo.MigrationDest.OptionMessage)." -Color Yellow
 Read-Host "Press enter now or CTL+C / Close window to exit now!"
 
+# ── TITLE CACHE PRE-PASS ─────────────────────────────────────────────────────
+# Build a lookup of Confluence page ID -> title so Resolve-HuduFolder can
+# identify pages acting as folder containers without extra API calls.
+foreach ($page in $SourcePages) {
+    $script:TitleCache[$page.id] = $page.OriginalTitle
+}
+PrintAndLog "Title cache built: $($script:TitleCache.Count) entries" -Color Cyan
+
+$script:SpaceHomepageId = if ($SingleChosenSpace) {
+    $spaceDetail = Invoke-RestMethod -Uri "$ConfluenceBaseUrl/api/v2/spaces/$($SingleChosenSpace.Id)" `
+        -Headers @{ Authorization = "Basic $encodedCreds"; Accept = "application/json" }
+    $spaceDetail.homepageId
+} else { $null }
+PrintAndLog "Space homepage ID: $($script:SpaceHomepageId ?? 'none — all-spaces mode or not found')" -Color Cyan
+
+
 $RunSummary.CompletedStates += "$($RunSummary.State) finished in $($($(Get-Date) - $RunSummary.SetupInfo.StartedAt).ToString())"
 $RunSummary.State="Stubbing articles"
 write-host "Part $($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta
@@ -237,6 +253,17 @@ foreach ($page in $SourcePages) {
         $page.CompanyId = $(Select-Object-From-List -message "Migrating Article: $($page.articlePreview ?? "no preview")... Which company to migrate into?" -objects $Attribution_Options).CompanyId
     }
 
+    # Resolve Hudu folder for this page (company-scoped migrations only)
+    $folderId = $null
+    if ($page.parentId -and $page.CompanyId -and $page.CompanyId -gt 0) {
+        $folderId = Resolve-HuduFolder `
+            -ParentId   $page.parentId `
+            -ParentType ($page.parentType ?? "page") `
+            -CompanyId  $page.CompanyId `
+            -AuthHeader "Basic $encodedCreds" `
+            -BaseUrl    $ConfluenceBaseUrl
+    }
+
     #stub article
     if ($null -eq $page.CompanyId -or $page.CompanyId -eq 0) {
         printandlog -message "Stubbing global KB article" -Color yellow
@@ -250,8 +277,8 @@ foreach ($page in $SourcePages) {
         $RunSummary.JobInfo.Skipped+=1
         continue
     } else {
-        printandlog -message "Stubbing KB article for Hudu company ID: $($page.CompanyId)" -Color  Yellow
-        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)" -CompanyId $($page.CompanyId)
+        printandlog -message "Stubbing KB article for Hudu company ID: $($page.CompanyId), folder: $($folderId ?? 'none')" -Color Yellow
+        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)" -CompanyId $($page.CompanyId) -FolderId $folderId
     }
     PrintAndLog -message "Article $($page.title) Stubbed with id $($($page.stub).id); $($($page.stub) | ConvertTo-Json -Depth 3)" -Color Green
 
@@ -350,8 +377,8 @@ foreach ($page in $StubbedPages) {
                 })
                 $normalizedFileName = $record.FileName.ToLowerInvariant()
                 $ImageMap[$normalizedFileName] = @{
-                    Id   = $upload.slug
-                    Type = if ($true -eq $record.IsImage) { 'image' } else { 'upload' }
+                  Id   = $upload.id
+                  Type = if ($true -eq $record.IsImage) { 'image' } else { 'upload' }
                 }
 
                 $record.UploadResult    = $upload
@@ -546,12 +573,14 @@ foreach ($id in $Article_Relinking.Keys) {
         PrintAndLog -Message "Replaced page/$($entry.Page.id) → $($entry.HuduArticle.url)" -Color Green
     }
 
+# fixed so that links containing parentheses or other special characters are properly escaped in regex replacement
     foreach ($sourcePage in $StubbedPages) {
-        $htmlContent = $htmlContent -replace $sourcePage.title, "<a href='$($sourcePage.HuduArticle.url ?? $sourcePage.stub.url)'>$($sourcePage.title)</a>"
+        $htmlContent = $htmlContent -replace [regex]::Escape($sourcePage.title), "<a href='$($sourcePage.HuduArticle.url ?? $sourcePage.stub.url)'>$($sourcePage.title)</a>"
         foreach ($baselink in $sourcePage.BaseLinks) {
-            $htmlContent = $htmlContent -replace $baselink, $($sourcePage.HuduArticle.url ?? $sourcePage.stub.url)
+            $htmlContent = $htmlContent -replace [regex]::Escape($baselink), $($sourcePage.HuduArticle.url ?? $sourcePage.stub.url)
         }
     }
+
     $relPage.ReplacedLinks = $(Get-LinksFromHTML -htmlContent $htmlContent -title $relPage.title -includeImages $false)
     $response = Set-HuduArticle -ArticleId $id -Content $htmlContent -Name $relPage.title
     $relPage.HuduArticle = $response.Article ?? $response

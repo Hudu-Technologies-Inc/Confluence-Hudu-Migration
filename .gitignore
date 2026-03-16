@@ -1,3 +1,21 @@
+# Temp and output dirs
+tmp/
+logs/
+
+# PowerShell
+*.ps1xml
+
+# Credentials / secrets
+*.cred
+*.key
+secrets.ps1
+init-local.ps1
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
 tmp
 tmp/*
 */temp/*
