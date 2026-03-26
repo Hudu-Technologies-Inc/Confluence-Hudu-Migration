@@ -16,3 +16,18 @@ init-local.ps1
 
 # Editor
 .vscode/
+tmp
+tmp/*
+*/temp/*
+temp
+temp\*
+*\temp\*
+*ConfluenceTransfer.log
+logs
+logs\errored\*
+*.log
+*.json
+*.html
+!environment.example
+!*.example
+*environment*.ps1
