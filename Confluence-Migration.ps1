@@ -244,7 +244,7 @@ foreach ($page in $SourcePages) {
     $PageIDX=$PageIDX+1
     $completionPercentage = Get-PercentDone -Current $PageIDX -Total $SourcePages.count
     #Generate articl preview
-            
+    $page.CompanyId = $null
     if ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 0) {
         $page.CompanyId = $SingleCompanyChoice.id
     } elseif ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 1) {
@@ -255,7 +255,7 @@ foreach ($page in $SourcePages) {
 
     # Resolve Hudu folder for this page (company-scoped migrations only)
     $folderId = $null
-    if ($page.parentId -and $page.CompanyId -and $page.CompanyId -gt 0) {
+    if ($page.parentId) {
         $folderId = Resolve-HuduFolder `
             -ParentId   $page.parentId `
             -ParentType ($page.parentType ?? "page") `
@@ -265,9 +265,9 @@ foreach ($page in $SourcePages) {
     }
 
     #stub article
-    if ($null -eq $page.CompanyId -or $page.CompanyId -eq 0) {
+    if ($null -eq $page.CompanyId -or $page.CompanyId -lt 1) {
         printandlog -message "Stubbing global KB article" -Color yellow
-        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)"
+        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)"  -FolderId $folderId
     } elseif ($page.CompanyId -lt 0) {
         printandlog -message "Skipping page/article transfer for $($page.title)" -Color Gray
         $RunSummary.Warnings+=@{
@@ -419,9 +419,14 @@ foreach ($page in $StubbedPages) {
     $page.updatedHtml = if ($null -ne $page.htmlContent -and $page.htmlContent.length -ge 1) {$page.htmlContent} else {"No Content Found in Confluence Page"}
     Save-HtmlSnapshot -PageId $page.id -Title $page.title -Content $page.rawContent -Suffix "before" -OutDir $TmpOutputDir
 
-    PrintAndLog -Message "Stripping bloat for $($page.title)" -Color Yellow
-    # $page.updatedHtml = Strip-ConfluenceBloat -Html $page.rawContent ?? "no content"
-    $page.updatedHtml = Replace-ConfluenceAttachmentTags -Html $page.updatedHtml -ImageMap $ImageMap -HuduBaseUrl $HuduBaseUrl
+    PrintAndLog -Message "Updating HTML content for $($page.title)" -Color Yellow
+    # $page.updatedHtml = Strip-ConfluenceBloat -Html $page.rawContent
+    # $page.updatedHtml = Replace-ConfluenceAttachmentTags -Html $page.updatedHtml -ImageMap $ImageMap -HuduBaseUrl $HuduBaseUrl
+    $page.updatedHtml = Convert-ConfluenceHtml `
+        -Html $page.rawContent `
+        -ImageMap $ImageMap `
+        -HuduBaseUrl $HuduBaseUrl
+    $page.updatedHtml = Cleanup-ResidualConfluenceHtml -Html $page.updatedHtml        
     $page.charsTrimmed =  $page.rawContent.length - $($page.updatedHtml).length
     PrintAndLog -Message "Removed $($page.charsTrimmed) characters of bloat from $($page.title)" -Color Green
     Save-HtmlSnapshot -PageId $page.id -Title $page.title -Content $($page.updatedHtml) -Suffix "after" -OutDir $TmpOutputDir

@@ -263,7 +263,7 @@ function Resolve-HuduFolder {
     param (
         [string]$ParentId,
         [string]$ParentType,
-        [int]$CompanyId,
+        [int]$CompanyId=$null,
         [string]$AuthHeader,
         [string]$BaseUrl
     )
@@ -287,7 +287,12 @@ function Resolve-HuduFolder {
     }
 
     try {
-        $folder   = Initialize-HuduFolder -FolderPath $path -CompanyId $CompanyId
+        $folder = $null
+        if ($null -eq $CompanyId){
+            $folder   = Initialize-HuduFolder -FolderPath $path
+        } else {
+            $folder   = Initialize-HuduFolder -FolderPath $path -CompanyId $CompanyId
+        }
         $folderId = $folder.id
         $script:FolderCache[$ParentId] = $folderId
         PrintAndLog "  📁 '$($path -join " → ")' → Hudu folder ID $folderId" -Color Cyan
@@ -299,56 +304,340 @@ function Resolve-HuduFolder {
 }
 
 
-function Replace-ConfluenceAttachmentTags {
+function Convert-ConfluenceHtml {
+    [CmdletBinding()]
     param(
+        [Parameter(Mandatory)]
         [string]$Html,
-        [hashtable]$ImageMap,
+
+        [hashtable]$ImageMap = @{},
         [string]$HuduBaseUrl
     )
 
- # Handle <ac:image><ri:attachment /></ac:image>
-    $imagePattern = '<ac:image[^>]*?>\s*<ri:attachment\s+ri:filename="([^"]+)"[^>]*?\/>\s*<\/ac:image>'
-    $Html = [regex]::Replace($Html, $imagePattern, {
-        param($match)
-        $filename = $match.Groups[1].Value.ToLowerInvariant()
-        if ($ImageMap.ContainsKey($filename)) {
-            $mapEntry = $ImageMap[$filename]
-            $id = $mapEntry.Id
-            $isImage = $mapEntry.Type -eq 'image'
+    function Get-HtmlEncoded {
+        param([string]$Text)
+        if ($null -eq $Text) { return '' }
+        return [System.Net.WebUtility]::HtmlEncode($Text)
+    }
 
-            $publicPhotoUrl = "$HuduBaseUrl/public_photo/$id"
-            $fileUrl = "$HuduBaseUrl/file/$id"
+    function Get-HtmlDecoded {
+        param([string]$Text)
+        if ($null -eq $Text) { return '' }
+        return [System.Net.WebUtility]::HtmlDecode($Text)
+    }
 
-            if ($isImage) {
-                return "<a href='$publicPhotoUrl' target='_blank'><img src='$publicPhotoUrl' alt='$filename' /></a>"
-            } elseif ($filename.ToLower() -match '\.(gif|bmp|svg|png|jpg|jpeg)$') {
-                return "<a href='$publicPhotoUrl' target='_blank'><img src='$publicPhotoUrl' alt='$filename' /></a>"
-            } else {
-                return "<a href='$fileUrl'>$filename</a>"
+    function Get-YouTubeEmbedUrl {
+        param([string]$Url)
+
+        if ([string]::IsNullOrWhiteSpace($Url)) {
+            return $null
+        }
+
+        $decodedUrl = [System.Net.WebUtility]::HtmlDecode($Url).Trim()
+
+        # Standard watch URL
+        if ($decodedUrl -match '(?i)(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?(?:[^#]*&)?v=([^&"#?/]+)') {
+            return "https://www.youtube.com/embed/$($Matches[1])"
+        }
+
+        # Short URL
+        if ($decodedUrl -match '(?i)(?:https?:\/\/)?youtu\.be\/([^&"#?/]+)') {
+            return "https://www.youtube.com/embed/$($Matches[1])"
+        }
+
+        # Existing embed URL
+        if ($decodedUrl -match '(?i)(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([^&"#?/]+)') {
+            return "https://www.youtube.com/embed/$($Matches[1])"
+        }
+
+        # Shorts URL
+        if ($decodedUrl -match '(?i)(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([^&"#?/]+)') {
+            return "https://www.youtube.com/embed/$($Matches[1])"
+        }
+
+        return $null
+    }
+
+    function Get-HuduAttachmentMarkup {
+        param(
+            [string]$Filename,
+            [hashtable]$ImageMap,
+            [string]$HuduBaseUrl
+        )
+
+        $key = $Filename.ToLowerInvariant()
+
+        if (-not $ImageMap.ContainsKey($key)) {
+            Write-Warning "Attachment '$Filename' not found in ImageMap"
+            return "<!-- Missing attachment: $(Get-HtmlEncoded $Filename) -->"
+        }
+
+        $mapEntry = $ImageMap[$key]
+        $id = $mapEntry.Id
+        $type = $mapEntry.Type
+
+        $publicPhotoUrl = "$HuduBaseUrl/public_photo/$id"
+        $fileUrl        = "$HuduBaseUrl/file/$id"
+        $safeFilename   = Get-HtmlEncoded $Filename
+
+        if ($type -eq 'image' -or $Filename -match '\.(gif|bmp|svg|png|jpe?g|webp)$') {
+            return "<figure><a href='$publicPhotoUrl' target='_blank'><img src='$publicPhotoUrl' alt='$safeFilename' /></a></figure>"
+        }
+        elseif ($Filename -match '\.(mp4|mov|avi|mkv|webm|m4v)$') {
+            return "<figure><video controls preload='metadata' src='$fileUrl'></video><figcaption>$safeFilename</figcaption></figure>"
+        }
+        else {
+            return "<p><a href='$fileUrl'>$safeFilename</a></p>"
+        }
+    }
+
+    function Get-RemoteMediaMarkup {
+        param(
+            [string]$Url,
+            [string]$AltText = ''
+        )
+
+        $decodedUrl = Get-HtmlDecoded $Url
+        $safeUrl    = Get-HtmlEncoded $decodedUrl
+        $safeAlt    = Get-HtmlEncoded $AltText
+
+        $ytEmbed = Get-YouTubeEmbedUrl -Url $decodedUrl
+        if ($ytEmbed) {
+            return "<figure><iframe width='560' height='315' src='$ytEmbed' title='Embedded video' frameborder='0' allowfullscreen></iframe></figure>"
+        }
+
+        if ($decodedUrl -match '\.(mp4|mov|avi|mkv|webm|m4v)(\?|#|$)') {
+            return "<figure><video controls preload='metadata' src='$safeUrl'></video></figure>"
+        }
+
+        if ($decodedUrl -match '\.(gif|bmp|svg|png|jpe?g|webp)(\?|#|$)') {
+            if ([string]::IsNullOrWhiteSpace($safeAlt)) { $safeAlt = $safeUrl }
+            return "<figure><a href='$safeUrl' target='_blank'><img src='$safeUrl' alt='$safeAlt' /></a></figure>"
+        }
+
+        return "<p><a href='$safeUrl' target='_blank'>$safeUrl</a></p>"
+    }
+
+    $regexOptions = [System.Text.RegularExpressions.RegexOptions]::Singleline -bor
+                    [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+
+    # 1) <ac:image> with <ri:attachment ... />
+    # ac:image with ri:attachment
+    $Html = [regex]::Replace(
+        $Html,
+        '<ac:image\b[^>]*>(?:(?!</?ac:image\b).)*?<ri:attachment\b[^>]*ri:filename="([^"]+)"[^>]*/>(?:(?!</?ac:image\b).)*?</ac:image>',
+        {
+            param($m)
+            $filename = $m.Groups[1].Value
+            Get-HuduAttachmentMarkup -Filename $filename -ImageMap $ImageMap -HuduBaseUrl $HuduBaseUrl
+        },
+        $regexOptions
+    )
+
+    # 2) ac:image with ri:url
+    $Html = [regex]::Replace(
+        $Html,
+        '<ac:image\b([^>]*)>(?:(?!</?ac:image\b).)*?<ri:url\b[^>]*ri:value="([^"]+)"[^>]*/>(?:(?!</?ac:image\b).)*?</ac:image>',
+        {
+            param($m)
+            $attrs = $m.Groups[1].Value
+            $url   = $m.Groups[2].Value
+            $alt   = ''
+
+            if ($attrs -match '\bac:alt="([^"]*)"') {
+                $alt = $Matches[1]
             }
-        } else {
-            Write-Warning "Image '$filename' not found in ImageMap"
-            return "<!-- Missing image: $filename -->"
-        }
-    })
 
-    # Handle <ac:link><ri:attachment /></ac:link>
-    $linkPattern = '<ac:link[^>]*?>\s*<ri:attachment\s+ri:filename="([^"]+)"[^>]*?\/>\s*<\/ac:link>'
-    $Html = [regex]::Replace($Html, $linkPattern, {
-        param($match)
-        $filename = $match.Groups[1].Value.ToLowerInvariant()
-        if ($ImageMap.ContainsKey($filename)) {
-            $mapEntry = $ImageMap[$filename]
-            $id = $mapEntry.Id
-            $path = ($mapEntry.Type -eq 'image') ? 'public_photo' : 'file'
-            return "<a href='$HuduBaseUrl/$path/$id'>$filename</a>"
-        } else {
-            return "<!-- Missing attachment: $filename -->"
-        }
-    })
+            Get-RemoteMediaMarkup -Url $url -AltText $alt
+        },
+        $regexOptions
+    )
+
+    # 3) <ac:link> with <ri:attachment ... />
+    $Html = [regex]::Replace(
+        $Html,
+        '<ac:link\b[^>]*>\s*<ri:attachment\b[^>]*ri:filename="([^"]+)"[^>]*/>\s*</ac:link>',
+        {
+            param($m)
+
+            $filename = $m.Groups[1].Value
+            $key = $filename.ToLowerInvariant()
+
+            if ($ImageMap.ContainsKey($key)) {
+                $mapEntry = $ImageMap[$key]
+                $id = $mapEntry.Id
+                $path = if ($mapEntry.Type -eq 'image') { 'public_photo' } else { 'file' }
+                return "<a href='$HuduBaseUrl/$path/$id'>$(Get-HtmlEncoded $filename)</a>"
+            }
+
+            return "<!-- Missing attachment link: $(Get-HtmlEncoded $filename) -->"
+        },
+        $regexOptions
+    )
+
+    # 4) Task lists
+    $Html = [regex]::Replace(
+        $Html,
+        '<ac:task-list\b[^>]*>(.*?)</ac:task-list>',
+        {
+            param($listMatch)
+
+            $inner = $listMatch.Groups[1].Value
+
+            $inner = [regex]::Replace(
+                $inner,
+                '<ac:task\b[^>]*>.*?<ac:task-status>(.*?)</ac:task-status>(.*?)</ac:task>',
+                {
+                    param($m)
+
+                    $status    = $m.Groups[1].Value.Trim()
+                    $bodyBlock = $m.Groups[2].Value
+                    $body = ''
+
+                    if ($bodyBlock -match '<ac:task-body>(.*?)</ac:task-body>') {
+                        $body = $Matches[1]
+                        $body = $body -replace '</?span[^>]*>', ''
+                        $body = $body -replace '</?p[^>]*>', ''
+                        $body = $body.Trim()
+                    }
+
+                    if (-not $body) { return '' }
+
+                    $checkbox = if ($status -eq 'complete') { '☑' } else { '☐' }
+                    return "<p>$checkbox $body</p>"
+                },
+                $regexOptions
+            )
+
+            return $inner.Trim()
+        },
+        $regexOptions
+    )
+
+    # 5) Status macros
+    $Html = [regex]::Replace(
+        $Html,
+        '<ac:structured-macro\b[^>]*ac:name="status"[^>]*>(.*?)</ac:structured-macro>',
+        {
+            param($m)
+
+            $inner = $m.Groups[1].Value
+            $title = ''
+            $colour = ''
+
+            if ($inner -match '<ac:parameter\b[^>]*ac:name="title"[^>]*>(.*?)</ac:parameter>') {
+                $title = (Get-HtmlDecoded $Matches[1]).Trim()
+            }
+
+            if ($inner -match '<ac:parameter\b[^>]*ac:name="colour"[^>]*>(.*?)</ac:parameter>') {
+                $colour = (Get-HtmlDecoded $Matches[1]).Trim().ToLowerInvariant()
+            }
+
+            if ([string]::IsNullOrWhiteSpace($title)) {
+                $title = 'status'
+            }
+
+            $class = switch ($colour) {
+                'green'  { 'status-green' }
+                'yellow' { 'status-yellow' }
+                'red'    { 'status-red' }
+                'blue'   { 'status-blue' }
+                default  { 'status-neutral' }
+            }
+
+            return "<span class='confluence-status $class'>$(Get-HtmlEncoded $title)</span>"
+        },
+        $regexOptions
+    )
+
+    # 6) Emoji fallback
+    $Html = [regex]::Replace(
+        $Html,
+        '<ac:emoticon\b[^>]*ac:emoji-fallback="([^"]*)"[^>]*/?>',
+        {
+            param($m)
+            Get-HtmlDecoded $m.Groups[1].Value
+        },
+        $regexOptions
+    )
+
+    # 7) Placeholder
+    $Html = [regex]::Replace(
+        $Html,
+        '<ac:placeholder\b[^>]*>(.*?)</ac:placeholder>',
+        {
+            param($m)
+            $text = (Get-HtmlDecoded $m.Groups[1].Value).Trim()
+            if ([string]::IsNullOrWhiteSpace($text)) { return '' }
+            return "<em>$(Get-HtmlEncoded $text)</em>"
+        },
+        $regexOptions
+    )
+
+    # 8) ADF extension blocks
+    $Html = [regex]::Replace(
+        $Html,
+        '<ac:adf-extension\b[^>]*>.*?</ac:adf-extension>',
+        '',
+        $regexOptions
+    )
+
+    # 9) Remove leftover ri tags
+    $Html = [regex]::Replace($Html, '<ri:[^>]+?/>', '', $regexOptions)
+    $Html = [regex]::Replace($Html, '</?ri:[a-zA-Z0-9:_-]+\b[^>]*>', '', $regexOptions)
+
+    # 10) Remove leftover ac tags only as tags, not as broad blocks
+    $Html = [regex]::Replace($Html, '</?ac:[a-zA-Z0-9:_-]+\b[^>]*>', '', $regexOptions)
+
+    # 11) Cleanup
+    $Html = $Html -replace '<p>\s*</p>', ''
+    $Html = $Html -replace '<p>\s*<br\s*/?>\s*</p>', ''
+    $Html = $Html -replace '<li>\s*</li>', ''
+    $Html = $Html -replace '/wikihttps://', 'https://'
+
     return $Html
 }
+function Cleanup-ResidualConfluenceHtml {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Html
+    )
 
+    # Normalize self-closing tags
+    $Html = $Html -replace '<p\s*/>', '<p></p>'
+    $Html = $Html -replace '<td\s*/>', '<td></td>'
+    $Html = $Html -replace '<th\s*/>', '<th></th>'
+    $Html = $Html -replace '<li\s*/>', '<li></li>'
+
+    # Remove empty paragraphs
+    $Html = [regex]::Replace($Html, '<p>\s*(?:<br\s*/?>|\&nbsp;|\s)*</p>', '', 'IgnoreCase')
+
+    # Remove empty list items
+    $Html = [regex]::Replace($Html, '<li>\s*(?:<p>\s*(?:<br\s*/?>|\&nbsp;|\s)*</p>\s*)*</li>', '', 'IgnoreCase')
+
+    # Remove empty table cells
+    $Html = [regex]::Replace($Html, '<t([dh])>\s*(?:<p>\s*(?:<br\s*/?>|\&nbsp;|\s)*</p>\s*)*</t\1>', '<t$1></t$1>', 'IgnoreCase')
+
+    # Remove fully empty rows
+    $Html = [regex]::Replace(
+        $Html,
+        '<tr>\s*(?:<t[dh]>\s*</t[dh]>\s*)+</tr>',
+        '',
+        'IgnoreCase'
+    )
+
+    # Remove paragraphs that only wrap block elements
+    $Html = [regex]::Replace($Html, '<p>\s*(<(?:figure|table|h[1-6]|ul|ol)[^>]*>.*?</(?:figure|table|h[1-6]|ul|ol)>)\s*</p>', '$1', 'Singleline,IgnoreCase')
+
+    # Collapse repeated blank lines between tags
+    $Html = [regex]::Replace($Html, '>\s{2,}<', '><')
+
+    # Optional: strip blank lines in general
+    $Html = [regex]::Replace($Html, "(`r`n|\r|\n){2,}", "`n")
+
+    return $Html.Trim()
+}
 function Get-SafeTitle {
     param ([string]$Name)
     return ($Name -replace '[\\/:*?"<>|]', '_')
@@ -405,7 +694,51 @@ function Get-ConfluenceLinks {
 function Strip-ConfluenceBloat {
     param([string]$Html)
 
-    # Remove all <ac:*>...</ac:*>
+    # ── TASK LISTS ────────────────────────────────────────────────────────────
+    # MUST run before the generic <ac:*> stripper below.
+    #
+    # Handles:
+    #   - <ac:task-list> with optional attributes (ac:task-list-id etc.)
+    #   - <ac:task> items with optional/empty <ac:task-body>
+    #   - Multiple task lists in a single page
+    #
+    # Produces: <p>☐ task text</p> (one paragraph per task, no list wrapper)
+
+    $Html = [regex]::Replace($Html, '<ac:task-list[^>]*>(.*?)</ac:task-list>', {
+        param($listMatch)
+        $inner = $listMatch.Groups[1].Value
+
+        # Convert each ac:task — task-body is optional (some tasks are empty)
+        $inner = [regex]::Replace($inner, '<ac:task>.*?<ac:task-status>(.*?)</ac:task-status>(.*?)</ac:task>', {
+            param($m)
+            $status    = $m.Groups[1].Value.Trim()
+            $bodyBlock = $m.Groups[2].Value
+
+            # Extract body text if present
+            $body = ''
+            if ($bodyBlock -match '<ac:task-body>(.*?)</ac:task-body>') {
+                $body = $Matches[1]
+                $body = $body -replace '<span[^>]*>', '' -replace '</span>', ''
+                $body = $body -replace '</?p>', ''
+                $body = $body.Trim()
+            }
+
+            # Skip empty tasks entirely
+            if (-not $body) { return '' }
+
+            $checkbox = if ($status -eq 'complete') { '☑' } else { '☐' }
+            return "<p>$checkbox $body</p>"
+        }, 'Singleline')
+
+        # Only emit content if there are actual tasks
+        $inner = $inner.Trim()
+        if ($inner) { return $inner } else { return '' }
+    }, 'Singleline')
+
+    # ── GENERIC AC / RI TAG REMOVAL ───────────────────────────────────────────
+    # Safe to run now that task lists have been converted above.
+
+    # Remove all remaining <ac:*>...</ac:*>
     $Html = [regex]::Replace($Html, '<ac:[^>]+>.*?</ac:[^>]+>', '', 'Singleline')
 
     # Remove self-closing <ac:... />
@@ -415,43 +748,34 @@ function Strip-ConfluenceBloat {
     $Html = [regex]::Replace($Html, '<ri:[^>]+?>', '', 'Singleline')
     $Html = [regex]::Replace($Html, '<ri:[^>]+?/>', '', 'Singleline')
 
-    # Convert <ac:task> blocks into bullet list items
-    $html = [regex]::Replace($html, '<ac:task>(.*?)<ac:task-body>(.*?)<\/ac:task-body>.*?<\/ac:task>', {
-        param($match)
-        $taskBody = $match.Groups[2].Value
-        # Optional: strip paragraph tags
-        $taskBody = $taskBody -replace '<\/?p>', ''
-        return "<li>☐ $taskBody</li>"
-    }, 'Singleline')
-
-    # Wrap the resulting tasks in a <ul> block
-    if ($html -match '<li>☐') {
-        $html = $html -replace '(<li>☐.*?</li>)', '<ul>$1</ul>'
-    }
+    # ── CLEANUP ───────────────────────────────────────────────────────────────
 
     # Remove empty paragraphs
     $Html = [regex]::Replace($Html, '<p>\s*</p>', '', 'Singleline')
-    if ($Html -match '/wikihttps://') {
-        $Html = $Html -replace '/wikihttps://', 'https://'
-    }
+
     # Remove placeholders
-    $html = $html -replace '<ac:placeholder>.*?<\/ac:placeholder>', ''
+    $Html = $Html -replace '<ac:placeholder>.*?<\/ac:placeholder>', ''
 
-    # Strip empty paragraphs
-    $html = $html -replace '<li>\s*<p\s*/>\s*</li>', ''
-    $html = $html -replace '<li>\s*<p><br\s*/?></p>\s*</li>', ''
-    # Remove empty rows
-    $html = $html -replace '<tr>(\s*<td>(<p\s*/>|<p><br\s*/?></p>)</td>\s*)+</tr>', ''
-    $html = $html -replace '<tr>(\s*<td>(<p\s*\/>|<p><br\s*\/?><\/p>)<\/td>\s*)+</tr>', ''
-    # Emojis to Unicode
-    $html = $html -replace '<ac:emoticon[^>]*?ac:emoji-fallback="(.*?)"[^>]*>', '$1'
-    # Strip atlassian structured doc bloc
-    $html = $html -replace '<ac:adf-extension>.*?</ac:adf-extension>', ''
-    # Remove atlassian boilerplate headers
-    $html = $html -replace '<h2>.*?(Date|Participants|Goals|Discussion topics|Decisions).*?</h2>', ''
+    # Strip empty list items
+    $Html = $Html -replace '<li>\s*<p\s*/>\s*</li>', ''
+    $Html = $Html -replace '<li>\s*<p><br\s*/?></p>\s*</li>', ''
 
-    $html = $html -replace '/wikihttps://', 'https://'
-    $htmlContent = $htmlContent -replace "https://$ConfluenceDomain.atlassian.net/wikihttps://", 'https://'
+    # Remove empty table rows
+    $Html = $Html -replace '<tr>(\s*<td>(<p\s*/>|<p><br\s*/?></p>)</td>\s*)+</tr>', ''
+    $Html = $Html -replace '<tr>(\s*<td>(<p\s*\/>|<p><br\s*\/?><\/p>)<\/td>\s*)+</tr>', ''
+
+    # Emojis to Unicode fallback character
+    $Html = $Html -replace '<ac:emoticon[^>]*?ac:emoji-fallback="(.*?)"[^>]*>', '$1'
+
+    # Strip Atlassian ADF extension blocks
+    $Html = $Html -replace '<ac:adf-extension>.*?</ac:adf-extension>', ''
+
+    # Remove Atlassian boilerplate meeting headers
+    $Html = $Html -replace '<h2>.*?(Date|Participants|Goals|Discussion topics|Decisions).*?</h2>', ''
+
+    # Fix malformed URLs produced by Confluence link rewriting
+    $Html = $Html -replace '/wikihttps://', 'https://'
+    $Html = $Html -replace "https://$ConfluenceDomain\.atlassian\.net/wikihttps://", 'https://'
 
     return $Html
 }
