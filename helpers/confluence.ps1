@@ -298,6 +298,7 @@ function Resolve-HuduFolder {
     }
 }
 
+
 function Convert-ConfluenceHtml {
     [CmdletBinding()]
     param(
@@ -402,9 +403,10 @@ function Convert-ConfluenceHtml {
                     [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
 
     # 1) <ac:image> with <ri:attachment ... />
+    # ac:image with ri:attachment
     $Html = [regex]::Replace(
         $Html,
-        '<ac:image\b[^>]*>.*?<ri:attachment\b[^>]*ri:filename="([^"]+)"[^>]*/>.*?</ac:image>',
+        '<ac:image\b[^>]*>(?:(?!</?ac:image\b).)*?<ri:attachment\b[^>]*ri:filename="([^"]+)"[^>]*/>(?:(?!</?ac:image\b).)*?</ac:image>',
         {
             param($m)
             $filename = $m.Groups[1].Value
@@ -413,13 +415,12 @@ function Convert-ConfluenceHtml {
         $regexOptions
     )
 
-    # 2) <ac:image> with <ri:url ... />
+    # 2) ac:image with ri:url
     $Html = [regex]::Replace(
         $Html,
-        '<ac:image\b([^>]*)>.*?<ri:url\b[^>]*ri:value="([^"]+)"[^>]*/>.*?</ac:image>',
+        '<ac:image\b([^>]*)>(?:(?!</?ac:image\b).)*?<ri:url\b[^>]*ri:value="([^"]+)"[^>]*/>(?:(?!</?ac:image\b).)*?</ac:image>',
         {
             param($m)
-
             $attrs = $m.Groups[1].Value
             $url   = $m.Groups[2].Value
             $alt   = ''
@@ -577,58 +578,47 @@ function Convert-ConfluenceHtml {
 
     return $Html
 }
-function Replace-ConfluenceAttachmentTags {
+function Cleanup-ResidualConfluenceHtml {
+    [CmdletBinding()]
     param(
-        [string]$Html,
-        [hashtable]$ImageMap,
-        [string]$HuduBaseUrl
+        [Parameter(Mandatory)]
+        [string]$Html
     )
 
- # Handle <ac:image><ri:attachment /></ac:image>
-    $imagePattern = '<ac:image[^>]*?>\s*<ri:attachment\s+ri:filename="([^"]+)"[^>]*?\/>\s*<\/ac:image>'
-    $Html = [regex]::Replace($Html, $imagePattern, {
-        param($match)
-        $filename = $match.Groups[1].Value.ToLowerInvariant()
-        if ($ImageMap.ContainsKey($filename)) {
-            $mapEntry = $ImageMap[$filename]
-            $id = $mapEntry.Id
-            $isImage = $mapEntry.Type -eq 'image'
+    # Normalize self-closing tags
+    $Html = $Html -replace '<p\s*/>', '<p></p>'
+    $Html = $Html -replace '<td\s*/>', '<td></td>'
+    $Html = $Html -replace '<th\s*/>', '<th></th>'
+    $Html = $Html -replace '<li\s*/>', '<li></li>'
 
-            $publicPhotoUrl = "$HuduBaseUrl/public_photo/$id"
-            $fileUrl = "$HuduBaseUrl/file/$id"
+    # Remove empty paragraphs
+    $Html = [regex]::Replace($Html, '<p>\s*(?:<br\s*/?>|\&nbsp;|\s)*</p>', '', 'IgnoreCase')
 
-            if ($isImage) {
-                return "<a href='$publicPhotoUrl' target='_blank'><img src='$publicPhotoUrl' alt='$filename' /></a>"
-            } elseif ($filename.ToLower() -match '\.(gif|bmp|svg|png|jpg|jpeg)$') {
-                return "<a href='$publicPhotoUrl' target='_blank'><img src='$publicPhotoUrl' alt='$filename' /></a>"
-            } elseif ($filename.ToLower() -match '\.(mp4|mov|avi|mkv|webm)$') {
-                return "<p><em>📎 Video attachment: $filename — see Files in the sidebar to download and play</em></p>"
-            } else {
-                return "<a href='$fileUrl'>$filename</a>"
-            }
-        } else {
-            Write-Warning "Image '$filename' not found in ImageMap"
-            return "<!-- Missing image: $filename -->"
-        }
-    })
+    # Remove empty list items
+    $Html = [regex]::Replace($Html, '<li>\s*(?:<p>\s*(?:<br\s*/?>|\&nbsp;|\s)*</p>\s*)*</li>', '', 'IgnoreCase')
 
-    # Handle <ac:link><ri:attachment /></ac:link>
-    $linkPattern = '<ac:link[^>]*?>\s*<ri:attachment\s+ri:filename="([^"]+)"[^>]*?\/>\s*<\/ac:link>'
-    $Html = [regex]::Replace($Html, $linkPattern, {
-        param($match)
-        $filename = $match.Groups[1].Value.ToLowerInvariant()
-        if ($ImageMap.ContainsKey($filename)) {
-            $mapEntry = $ImageMap[$filename]
-            $id = $mapEntry.Id
-            $path = ($mapEntry.Type -eq 'image') ? 'public_photo' : 'file'
-            return "<a href='$HuduBaseUrl/$path/$id'>$filename</a>"
-        } else {
-            return "<!-- Missing attachment: $filename -->"
-        }
-    })
-    return $Html
+    # Remove empty table cells
+    $Html = [regex]::Replace($Html, '<t([dh])>\s*(?:<p>\s*(?:<br\s*/?>|\&nbsp;|\s)*</p>\s*)*</t\1>', '<t$1></t$1>', 'IgnoreCase')
+
+    # Remove fully empty rows
+    $Html = [regex]::Replace(
+        $Html,
+        '<tr>\s*(?:<t[dh]>\s*</t[dh]>\s*)+</tr>',
+        '',
+        'IgnoreCase'
+    )
+
+    # Remove paragraphs that only wrap block elements
+    $Html = [regex]::Replace($Html, '<p>\s*(<(?:figure|table|h[1-6]|ul|ol)[^>]*>.*?</(?:figure|table|h[1-6]|ul|ol)>)\s*</p>', '$1', 'Singleline,IgnoreCase')
+
+    # Collapse repeated blank lines between tags
+    $Html = [regex]::Replace($Html, '>\s{2,}<', '><')
+
+    # Optional: strip blank lines in general
+    $Html = [regex]::Replace($Html, "(`r`n|\r|\n){2,}", "`n")
+
+    return $Html.Trim()
 }
-
 function Get-SafeTitle {
     param ([string]$Name)
     return ($Name -replace '[\\/:*?"<>|]', '_')

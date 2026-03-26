@@ -426,6 +426,7 @@ foreach ($page in $StubbedPages) {
         -Html $page.rawContent `
         -ImageMap $ImageMap `
         -HuduBaseUrl $HuduBaseUrl
+    $page.updatedHtml = Cleanup-ResidualConfluenceHtml -Html $page.updatedHtml        
     $page.charsTrimmed =  $page.rawContent.length - $($page.updatedHtml).length
     PrintAndLog -Message "Removed $($page.charsTrimmed) characters of bloat from $($page.title)" -Color Green
     Save-HtmlSnapshot -PageId $page.id -Title $page.title -Content $($page.updatedHtml) -Suffix "after" -OutDir $TmpOutputDir
