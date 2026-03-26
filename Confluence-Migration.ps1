@@ -244,7 +244,7 @@ foreach ($page in $SourcePages) {
     $PageIDX=$PageIDX+1
     $completionPercentage = Get-PercentDone -Current $PageIDX -Total $SourcePages.count
     #Generate articl preview
-            
+    $page.CompanyId = $null
     if ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 0) {
         $page.CompanyId = $SingleCompanyChoice.id
     } elseif ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 1) {
@@ -255,7 +255,7 @@ foreach ($page in $SourcePages) {
 
     # Resolve Hudu folder for this page (company-scoped migrations only)
     $folderId = $null
-    if ($page.parentId -and $page.CompanyId -and $page.CompanyId -gt 0) {
+    if ($page.parentId) {
         $folderId = Resolve-HuduFolder `
             -ParentId   $page.parentId `
             -ParentType ($page.parentType ?? "page") `
@@ -265,9 +265,9 @@ foreach ($page in $SourcePages) {
     }
 
     #stub article
-    if ($null -eq $page.CompanyId -or $page.CompanyId -eq 0) {
+    if ($null -eq $page.CompanyId -or $page.CompanyId -lt 1) {
         printandlog -message "Stubbing global KB article" -Color yellow
-        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)"
+        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)"  -FolderId $folderId
     } elseif ($page.CompanyId -lt 0) {
         printandlog -message "Skipping page/article transfer for $($page.title)" -Color Gray
         $RunSummary.Warnings+=@{

@@ -263,7 +263,7 @@ function Resolve-HuduFolder {
     param (
         [string]$ParentId,
         [string]$ParentType,
-        [int]$CompanyId,
+        [int]$CompanyId=$null,
         [string]$AuthHeader,
         [string]$BaseUrl
     )
@@ -287,7 +287,12 @@ function Resolve-HuduFolder {
     }
 
     try {
-        $folder   = Initialize-HuduFolder -FolderPath $path -CompanyId $CompanyId
+        $folder = $null
+        if ($null -eq $CompanyId){
+            $folder   = Initialize-HuduFolder -FolderPath $path
+        } else {
+            $folder   = Initialize-HuduFolder -FolderPath $path -CompanyId $CompanyId
+        }
         $folderId = $folder.id
         $script:FolderCache[$ParentId] = $folderId
         PrintAndLog "  📁 '$($path -join " → ")' → Hudu folder ID $folderId" -Color Cyan
@@ -324,15 +329,29 @@ function Convert-ConfluenceHtml {
     function Get-YouTubeEmbedUrl {
         param([string]$Url)
 
-        if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
+        if ([string]::IsNullOrWhiteSpace($Url)) {
+            return $null
+        }
 
-        if ($Url -match 'youtube\.com/watch\?.*?[?&]v=([^&]+)') {
+        $decodedUrl = [System.Net.WebUtility]::HtmlDecode($Url).Trim()
+
+        # Standard watch URL
+        if ($decodedUrl -match '(?i)(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?(?:[^#]*&)?v=([^&"#?/]+)') {
             return "https://www.youtube.com/embed/$($Matches[1])"
         }
-        elseif ($Url -match 'youtu\.be/([^?&/]+)') {
+
+        # Short URL
+        if ($decodedUrl -match '(?i)(?:https?:\/\/)?youtu\.be\/([^&"#?/]+)') {
             return "https://www.youtube.com/embed/$($Matches[1])"
         }
-        elseif ($Url -match 'youtube\.com/embed/([^?&/]+)') {
+
+        # Existing embed URL
+        if ($decodedUrl -match '(?i)(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([^&"#?/]+)') {
+            return "https://www.youtube.com/embed/$($Matches[1])"
+        }
+
+        # Shorts URL
+        if ($decodedUrl -match '(?i)(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([^&"#?/]+)') {
             return "https://www.youtube.com/embed/$($Matches[1])"
         }
 
