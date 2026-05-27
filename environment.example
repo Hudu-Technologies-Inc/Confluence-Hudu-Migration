@@ -1,0 +1,6 @@
+$ConfluenceToken = "longsecretstring"
+$ConfluenceDomain = "yoururl.atlassian.net" #'hudu-integrations' would be valid for 'https://www.hudu-integrations.atlassian.net'
+$Confluence_Username = "confluence-email@tld.net"
+$HuduBaseURL = "https://yoururlhere"
+$HuduAPIKey = ""
+. .\Confluence-Migration.ps1
