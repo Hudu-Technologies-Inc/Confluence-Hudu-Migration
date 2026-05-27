@@ -84,7 +84,7 @@ function Set-HuduModuleInitialized {
     param (
             [string]$HAPImodulePath = "C:\Users\$env:USERNAME\Documents\GitHub\HuduAPI\HuduAPI\HuduAPI.psm1",
             [bool]$use_hudu_fork = $true,
-            [version]$RequiredHuduVersion = [version]"2.39.6",
+            [version]$RequiredHuduVersion = [version]"2.42.0",
             $DisallowedVersions = @([version]"2.37.0"),
             [string]$HuduApiRepositoryUrl = $($env:HUDUAPI_REPOSITORY_URL ?? "https://github.com/Hudu-Technologies-Inc/HuduAPI.git"),
             [string]$HuduApiBranch = $($env:HUDUAPI_REPOSITORY_BRANCH ?? "master"),
@@ -93,7 +93,9 @@ function Set-HuduModuleInitialized {
                 Join-Path (
                     $(if ($PSScriptRoot) { $PSScriptRoot } else { (Resolve-Path .).Path })
                 ) 'HAPI.zip'
-            )
+            ),
+        [string]$HuduBaseURL,
+        [string]$HuduAPIKey            
         )
     $AllowHuduGalleryFallback = $false
  
@@ -370,14 +372,14 @@ function Set-HuduModuleInitialized {
     }
  
     #Login to Hudu
-    Set-HuduInstance
+    Set-HuduInstance -HuduBaseURL $HuduBaseURL -HuduAPIKey $HuduAPIKey
  
     # Check we have the correct version
     $CurrentVersion = [version]($(Get-HuduAppInfo).version)
  
     return $CurrentVersion
 }
-Set-HuduModuleInitialized
+Set-HuduModuleInitialized -HuduBaseURL $HuduBaseURL -HuduAPIKey $HuduAPIKey
  
 
 Write-Host "Encoding Credentials for Confluence..."
