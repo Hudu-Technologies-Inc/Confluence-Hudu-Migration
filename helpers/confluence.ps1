@@ -462,6 +462,16 @@ function Convert-ConfluenceHtml {
         return [System.Net.WebUtility]::HtmlDecode($Text)
     }
 
+    function Get-HuduAttachmentReference {
+        param([object]$MapEntry)
+
+        if ($MapEntry.Type -eq 'upload' -and -not [string]::IsNullOrWhiteSpace($MapEntry.Slug)) {
+            return $MapEntry.Slug
+        }
+
+        return $MapEntry.Id
+    }
+
     function Get-YouTubeEmbedUrl {
         param([string]$Url)
 
@@ -509,7 +519,7 @@ function Convert-ConfluenceHtml {
         }
 
         $mapEntry = $ImageMap[$key]
-        $id = $mapEntry.Id
+        $id = Get-HuduAttachmentReference -MapEntry $mapEntry
         $type = $mapEntry.Type
 
         $publicPhotoUrl = "$HuduBaseUrl/public_photo/$id"
@@ -601,7 +611,7 @@ function Convert-ConfluenceHtml {
 
             if ($ImageMap.ContainsKey($key)) {
                 $mapEntry = $ImageMap[$key]
-                $id = $mapEntry.Id
+                $id = Get-HuduAttachmentReference -MapEntry $mapEntry
                 $path = if ($mapEntry.Type -eq 'image') { 'public_photo' } else { 'file' }
                 return "<a href='$HuduBaseUrl/$path/$id'>$(Get-HtmlEncoded $filename)</a>"
             }
