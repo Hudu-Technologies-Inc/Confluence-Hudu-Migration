@@ -331,24 +331,30 @@ foreach ($page in $StubbedPages) {
         # Start Attachment Download
         $record = Invoke-ConfluenceAttachDownload -attachment $att -page $page -pageId $page.id -title $page.title -ConfluenceBaseUrl $ConfluenceBaseUrl -TmpOutputDir $TmpOutputDir -encodedCreds $encodedCreds
 
-        [void]$TrackedAttachments.Add($record ?? [PSCustomObject]@{
-            FileName         = $(Get-SafeFilename -Name $($record.title ?? "Title not present for page id $($page.id ?? 0)"))
-            Extension        = [IO.Path]::GetExtension($record.title).ToLower()
-            IsImage          = $false
-            PageId           = $($page.id)
-            PageTitle        = $($page.title)
-            SourceUrl        = "$ConfluenceBaseUrl$($record._links.download)"
-            LocalPath        = "$TmpOutputDir\$($record.title)"
-            UploadResult     = $null
-            HuduArticleId    = $null
-            HuduUploadType   = $null
-            SuccessDownload  = $false
-            AttachmentSize   = (Get-Item "$TmpOutputDir\$($record.title)").Length
-            AttachmentTooLarge=$((Get-Item "$TmpOutputDir\$($record.title)").Length -gt 100MB)
-        })
+        if ($null -eq $record) {
+            $record = [PSCustomObject]@{
+                FileName           = $(Get-SafeFilename -Name $($att.title ?? "Title not present for page id $($page.id ?? 0)"))
+                Extension          = [IO.Path]::GetExtension($att.title).ToLower()
+                IsImage            = $false
+                PageId             = $($page.id)
+                PageTitle          = $($page.title)
+                AttachmentId       = $att.id
+                AttachmentAri      = $att.ari
+                SourceUrl          = $null
+                LocalPath          = $null
+                UploadResult       = $null
+                HuduArticleId      = $null
+                HuduUploadType     = $null
+                SuccessDownload    = $false
+                AttachmentSize     = 0
+                AttachmentTooLarge = $false
+            }
+        }
 
-        printandlog -message "Downloaded Attachment $AttachIDX of $($page.attachments.Count) for $($page.title) - $($attachment.filename ?? "File")" -Color Yellow
+        [void]$TrackedAttachments.Add($record)
+
         if ($record -and $record.SuccessDownload -and $record.LocalPath) {
+            printandlog -message "Downloaded Attachment $AttachIDX of $($page.attachments.Count) for $($page.title) - $($record.FileName)" -Color Yellow
             # Handle attachments that are too large for Hudu (larger than)
             if ($true -eq $record.AttachmentTooLarge) {
                 $ErrorObject=@{
@@ -403,6 +409,9 @@ foreach ($page in $StubbedPages) {
                 $RunSummary.JobInfo.UploadsErrored+=1
                 Write-ErrorObjectsToFile -Name "$($record.FileName)" -ErrorObject $ErrorInfo
             }
+        } else {
+            printandlog -message "Failed to download Attachment $AttachIDX of $($page.attachments.Count) for $($page.title) - $($record.FileName)" -Color Red
+            $RunSummary.JobInfo.UploadsErrored+=1
         }
     }
     Write-Progress -Activity "Processing attachments for $($page.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
