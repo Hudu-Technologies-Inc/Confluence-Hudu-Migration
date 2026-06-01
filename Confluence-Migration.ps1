@@ -380,16 +380,25 @@ foreach ($page in $StubbedPages) {
                     $upload = $upload.upload ?? $upload
                 }
                 write-host "$($upload.slug)"
+                $uploadFileRef = if (-not [string]::IsNullOrWhiteSpace($upload.slug)) { $upload.slug } else { $upload.id }
+                $huduUploadUrl = if ($true -eq $record.IsImage) {
+                    $upload.url
+                } else {
+                    "$HuduBaseUrl/file/$uploadFileRef"
+                }
                 $AllNewLinks.Add([PSCustomObject]@{
                     PageId        = $page.id
                     PageTitle     = $page.title
                     LocalFile     = $record.FileName
-                    HuduUrl       = $upload.url
+                    HuduUrl       = $huduUploadUrl
                     HuduUploadId  = $upload.id
+                    HuduUploadSlug= $upload.slug
                 })
                 $normalizedFileName = $record.FileName.ToLowerInvariant()
                 $ImageMap[$normalizedFileName] = @{
                   Id   = $upload.id
+                  Slug = $upload.slug
+                  Url  = $huduUploadUrl
                   Type = if ($true -eq $record.IsImage) { 'image' } else { 'upload' }
                 }
 
@@ -455,9 +464,11 @@ foreach ($page in $StubbedPages) {
         Set-Content -Path $htmlPath -Value $($page.updatedHtml) -Encoding UTF8
 
         $htmlAttachment = New-HuduUpload -FilePath $htmlPath -record_id $($page.stub).id -record_type 'Article'
+        $htmlAttachment = $htmlAttachment.upload ?? $htmlAttachment
         # $AllNewLinks+=$htmlAttachment.url
 
-        $FinalContents = "Full content too long. See attached file: <a href='$HuduBaseUrl/file/$($htmlAttachment.id)'>$($page.title).html</a>"
+        $htmlAttachmentFileRef = if (-not [string]::IsNullOrWhiteSpace($htmlAttachment.slug)) { $htmlAttachment.slug } else { $htmlAttachment.id }
+        $FinalContents = "Full content too long. See attached file: <a href='$HuduBaseUrl/file/$htmlAttachmentFileRef'>$($page.title).html</a>"
     } else {
         $FinalContents=$($($page.updatedHtml) ?? "unknown contents")
     }
