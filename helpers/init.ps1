@@ -15,7 +15,7 @@ $HuduAPIKey = $HuduAPIKey ?? "$(read-host "Please Enter Hudu API Key")"
 # ---------------------------------------
 # User-Entered Confluence Variables
 # ---------------------------------------
-$ConfluenceToken= $ConfluenceToken ?? "$(Read-Host "Please Enter Confluence Token")"
+$ConfluenceToken= ($ConfluenceToken ?? "$(Read-Host "Please Enter Confluence Token")").Trim()
 $ConfluenceDomain = $ConfluenceDomain ?? "$(read-host "please enter your Confluence subdomain (e.g 'hudu-integrations' would be valid for 'https://www.hudu-integrations.atlassian.net'.)")"
 
 # these are used for various link replacement later on.
@@ -23,7 +23,7 @@ $ConfluenceDomain = ($ConfluenceDomain -replace '^https?://','' -replace '/.*$',
 $confluenceBase="$($ConfluenceDomain).atlassian.net"
 $ConfluenceDomainBase= "https://$confluenceBase"
 $ConfluenceBaseUrl ="$ConfluenceDomainBase/wiki"
-$Confluence_Username=$Confluence_Username ?? "$(read-host 'please enter the username associated with your Confluence account / token [this should generally be your associated email address]')"
+$Confluence_Username=($Confluence_Username ?? "$(read-host 'please enter the username associated with your Confluence account / token [this should generally be your associated email address]')").Trim()
 @($ConfluenceDomain, $confluenceBase, $ConfluenceDomainBase, $ConfluenceBaseUrl) | ForEach-Object { Write-Host "Set Confluence variable: $_" -ForegroundColor Green }
 
 # ---------------------------------------
@@ -36,11 +36,11 @@ while ($HuduAPIKey.Length -ne 24) {
         Write-Host "This doesn't seem to be a valid Hudu API key. It is $($HuduAPIKey.Length) characters long, but should be 24." -ForegroundColor Red
     }
 }
-while ($ConfluenceToken.Length -ne 192) {
-    $ConfluenceToken= $("$(Read-Host "Please Enter Confluence Token")")
+while ([string]::IsNullOrWhiteSpace($ConfluenceToken)) {
+    $ConfluenceToken= $("$(Read-Host "Please Enter Confluence Token")").Trim()
     Clear-Host
-    if ($ConfluenceToken.Length -ne 192) {
-        Write-Host "This doesn't seem to be a valid confluence token. It is $($ConfluenceToken.Length) characters long, but should be 192." -ForegroundColor Red
+    if ([string]::IsNullOrWhiteSpace($ConfluenceToken)) {
+        Write-Host "The Confluence API token cannot be blank." -ForegroundColor Red
     }
 }
 # ---------------------------------------

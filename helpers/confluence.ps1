@@ -9,8 +9,30 @@ function Get-AttachmentsForPage {
 
     $AllAttachments = @()
     $limit = 50
-    $start = 0
+    $attachmentsUrl = "$BaseUrl/api/v2/pages/$PageId/attachments?limit=$limit"
 
+    try {
+        do {
+            $attachResponse = Invoke-RestMethod -Uri $attachmentsUrl -Headers @{
+                Authorization = $AuthHeader
+                Accept        = 'application/json'
+            }
+
+            $AllAttachments += $attachResponse.results
+            $nextPath = $attachResponse._links.next
+            $attachmentsUrl = if ($nextPath) {
+                Resolve-ConfluenceUrl -BaseUrl $BaseUrl -PathOrUrl $nextPath
+            } else {
+                $null
+            }
+        } while ($attachmentsUrl)
+
+        return $AllAttachments
+    } catch {
+        PrintAndLog -message "Could not retrieve v2 attachments for page $PageId; falling back to v1 endpoint. $($_.Exception.Message)" -Color Yellow
+    }
+
+    $start = 0
     do {
         $uri = "$BaseUrl/rest/api/content/$PageId/child/attachment" +
                "?limit=$limit&start=$start&expand=version,metadata"
@@ -25,6 +47,106 @@ function Get-AttachmentsForPage {
     } while ($attachResponse.size -eq $limit)
 
     return $AllAttachments
+}
+
+function Resolve-ConfluenceUrl {
+    param (
+        [string]$BaseUrl,
+        [string]$PathOrUrl
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PathOrUrl)) {
+        return $null
+    }
+
+    if ($PathOrUrl -match '^https?://') {
+        return $PathOrUrl
+    }
+
+    $domainBase = $BaseUrl -replace '/wiki$', ''
+    if ($PathOrUrl.StartsWith('/wiki')) {
+        return "$domainBase$PathOrUrl"
+    }
+
+    if ($PathOrUrl.StartsWith('/')) {
+        return "$BaseUrl$PathOrUrl"
+    }
+
+    return "$BaseUrl/$PathOrUrl"
+}
+
+function Get-ConfluenceAttachmentIdCandidates {
+    param ([object]$Attachment)
+
+    $ids = @()
+    if (-not [string]::IsNullOrWhiteSpace($Attachment.id)) {
+        $ids += [string]$Attachment.id
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Attachment.ari) -and $Attachment.ari -match 'attachment/([^:/]+)$') {
+        $ids += $Matches[1]
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Attachment.id) -and $Attachment.id -match '^att(\d+)$') {
+        $ids += $Matches[1]
+    }
+
+    return $ids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+}
+
+function Resolve-ConfluenceAttachmentDownloadUrl {
+    param (
+        [object]$Attachment,
+        [string]$BaseUrl,
+        [string]$AuthHeader,
+        [string]$PageId
+    )
+
+    $attachmentPageId = if (-not [string]::IsNullOrWhiteSpace($PageId)) { $PageId } else { $Attachment.pageId }
+    if (-not [string]::IsNullOrWhiteSpace($attachmentPageId)) {
+        foreach ($attachmentId in (Get-ConfluenceAttachmentIdCandidates -Attachment $Attachment)) {
+            $apiDownloadUrl = "$BaseUrl/rest/api/content/$attachmentPageId/child/attachment/$attachmentId/download"
+            $probe = $null
+            try {
+                $probe = Invoke-WebRequest -Uri $apiDownloadUrl -Headers @{ Authorization = $AuthHeader } -Method Get -MaximumRedirection 0 -SkipHttpErrorCheck -ErrorAction SilentlyContinue
+                if ($probe -and [int]$probe.StatusCode -ge 200 -and [int]$probe.StatusCode -lt 400) {
+                    return $apiDownloadUrl
+                }
+            } catch {
+                if ($probe -and [int]$probe.StatusCode -ge 200 -and [int]$probe.StatusCode -lt 400) {
+                    return $apiDownloadUrl
+                }
+                continue
+            }
+        }
+    }
+
+    foreach ($candidate in @($Attachment.downloadLink, $Attachment._links.download)) {
+        $url = Resolve-ConfluenceUrl -BaseUrl $BaseUrl -PathOrUrl $candidate
+        if ($url) {
+            return $url
+        }
+    }
+
+    foreach ($attachmentId in (Get-ConfluenceAttachmentIdCandidates -Attachment $Attachment)) {
+        try {
+            $detail = Invoke-RestMethod -Uri "$BaseUrl/api/v2/attachments/$attachmentId" -Method GET -Headers @{
+                Authorization = $AuthHeader
+                Accept        = 'application/json'
+            }
+
+            foreach ($candidate in @($detail.downloadLink, $detail._links.download)) {
+                $url = Resolve-ConfluenceUrl -BaseUrl $BaseUrl -PathOrUrl $candidate
+                if ($url) {
+                    return $url
+                }
+            }
+        } catch {
+            continue
+        }
+    }
+
+    throw "No download URL found for Confluence attachment '$($Attachment.title)' (id '$($Attachment.id)', ari '$($Attachment.ari)')."
 }
 
 function GetAllSpaces {
@@ -139,45 +261,59 @@ function Invoke-ConfluenceAttachDownload {
         [PSCustomObject]$attachment,
         [PSCustomObject]$page,
         [string]$pageId,
-        [string]$title
+        [string]$title,
+        [string]$ConfluenceBaseUrl,
+        [string]$TmpOutputDir,
+        [string]$encodedCreds
     )
 
-    $filename = Get-SafeFilename -Name $attachment.title
-    $downloadUrl = "$ConfluenceBaseUrl$($attachment._links.download)"
+    $authHeader = "Basic $encodedCreds"
+    $filename = Get-SafeFilename -Name ($attachment.title ?? "attachment-$($attachment.id ?? $pageId)")
+    $downloadUrl = $null
     $localPath = Join-Path -Path $TmpOutputDir -ChildPath $filename
+    $ext = [IO.Path]::GetExtension($filename).ToLower()
+    $imageExtensions = @('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg')
+    $isImage = $imageExtensions -contains $ext
+    $record = [PSCustomObject]@{
+        FileName           = $filename
+        Extension          = $ext
+        IsImage            = $isImage
+        PageId             = $pageId
+        PageTitle          = $title
+        AttachmentId       = $attachment.id
+        AttachmentAri      = $attachment.ari
+        SourceUrl          = $null
+        LocalPath          = $localPath
+        UploadResult       = $null
+        HuduArticleId      = $null
+        HuduUploadType     = $null
+        SuccessDownload    = $false
+        AttachmentSize     = 0
+        AttachmentTooLarge = $false
+    }
 
     try {
-        Invoke-WebRequest -Uri $downloadUrl -Headers @{ Authorization = "Basic $encodedCreds" } -OutFile $localPath -ErrorAction Stop
+        $downloadUrl = Resolve-ConfluenceAttachmentDownloadUrl -Attachment $attachment -BaseUrl $ConfluenceBaseUrl -AuthHeader $authHeader -PageId $pageId
+        $record.SourceUrl = $downloadUrl
+
+        Invoke-WebRequest -Uri $downloadUrl -Headers @{ Authorization = $authHeader } -OutFile $localPath -MaximumRedirection 10 -ErrorAction Stop
         Write-Host "Saved attachment: $filename"
 
-        $ext = [IO.Path]::GetExtension($filename).ToLower()
-        $imageExtensions = @('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg')
-        $isImage = $imageExtensions -contains $ext
-
-        $record = [PSCustomObject]@{
-            FileName         = $filename
-            Extension        = $ext
-            IsImage          = $isImage
-            PageId           = $pageId
-            PageTitle        = $title
-            SourceUrl        = $downloadUrl
-            LocalPath        = $localPath
-            UploadResult     = $null
-            HuduArticleId    = $null
-            HuduUploadType   = $null
-            SuccessDownload  = $true
-        }
+        $record.SuccessDownload = $true
+        $record.AttachmentSize = (Get-Item -LiteralPath $localPath).Length
+        $record.AttachmentTooLarge = $record.AttachmentSize -gt 100MB
 
         return $record
     } catch {
-                Write-ErrorObjectsToFile -Name "$($record.FileName)" -ErrorObject @{
-                    Error       = $_
-                    Record      = $record 
-                    Attachment  = $att
-                    Message     ="Error During Spaces Request"
-                    response    = $response
-                    spacesUrl  = $spacesUrl
-                }
+        Write-ErrorObjectsToFile -Name "$($record.FileName)" -ErrorObject @{
+            Error       = $_
+            Record      = $record
+            Attachment  = $attachment
+            Message     = "Error During Attachment Download"
+            DownloadUrl = $downloadUrl
+        }
+
+        return $record
     }
 }
 function New-HuduStubArticle {
