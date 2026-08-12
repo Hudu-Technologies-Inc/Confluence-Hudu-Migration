@@ -77,7 +77,8 @@ if ($AllSpaces.Count -eq 0) {
     exit 1
 }
 
-$SourcePages = @()
+$SourcePages = @();
+try {$migrationRecord = Set-MigrationRecord} catch {}
 $RunSummary.JobInfo.MigrationSource=$(Select-Object-From-List -Objects @(
 [PSCustomObject]@{
     OptionMessage= "From a Single/Specific Confluence Space"

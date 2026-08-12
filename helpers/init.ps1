@@ -1,9 +1,9 @@
 # ---------------------------------------
 # Azure Vault Variables
 # ---------------------------------------
-$AzVault_Name = "hudu-pshell-learning"
-$AzVault_HuduSecretName = "demo3-apikey-mason"
-$AzVault_ConfluenceAPIKey="ConfluenceAPIKey"
+$AzVault_Name = $AzVault_Name ?? "hudu-pshell-learning"
+$AzVault_HuduSecretName = $AzVault_HuduSecretName ?? "demo3-apikey-mason"
+$AzVault_ConfluenceAPIKey= $AzVault_ConfluenceAPIKey ?? "ConfluenceAPIKey"
 
 # ---------------------------------------
 # Hudu Variables
@@ -54,7 +54,6 @@ $LogFile = $(join-path $LogsDir "ConfluenceTransfer.log")
 $TmpOutputDir = "./tmp"
 foreach ($folder in @($TmpOutputDir,$LogsDir,$ErroredItemsFolder)) {
     if (!(Test-Path -Path "$folder")) { New-Item "$folder" -ItemType Directory }
-    Get-ChildItem -Path "$folder" -File -Recurse -Force | Remove-Item -Force
 }
 function Set-HuduInstance {
     param(
@@ -399,7 +398,7 @@ if ($PowershellVersion -lt $requiredPowershellVersion) {
 }
 
 
-$RequiredHuduVersion = "2.40.1"
+$RequiredHuduVersion = "2.44.0"
 $HuduAppInfo = Get-HuduAppInfo
 $CurrentVersion = [version]$HuduAppInfo.version
 if ($CurrentVersion -lt [version]$RequiredHuduVersion) {
