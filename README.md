@@ -10,7 +10,7 @@ Easily transfer your Confluence pages over to Hudu!
 
 Ensure you have:
 
-- Hudu instance ready to go with your API key on-hand (version 2.43.1 or newer required)
+- Hudu instance ready to go with your API key on-hand (version 2.44.0 or newer required)
 - Confluence instance ready to transfer with API key on-hand, associated username (email)
 - Powershell 7.5.0 or later is reccomended for running this script
 
