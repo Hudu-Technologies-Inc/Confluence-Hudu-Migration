@@ -27,6 +27,30 @@ if ($MyInvocation.InvocationName -eq '.') {
 . ".\helpers\confluence.ps1"
 . ".\helpers\general.ps1"
 
+$PowershellVersion = [version](Get-Host).Version
+$requiredPowershellVersion = [version]"7.5.0"
+Write-Host "Required PowerShell version: $requiredPowershellVersion" -ForegroundColor Blue
+
+if ($PowershellVersion -lt $requiredPowershellVersion) {
+    Write-Host "PowerShell $requiredPowershellVersion or higher is required. You have $PowershellVersion." -ForegroundColor Red
+    exit 1
+} else {
+    Write-Host "PowerShell version $PowershellVersion found" -ForegroundColor Green
+}
+
+
+$RequiredHuduVersion = "2.40.1"
+$HuduAppInfo = Get-HuduAppInfo
+$CurrentVersion = [version]$HuduAppInfo.version
+if ($CurrentVersion -lt [version]$RequiredHuduVersion) {
+    Write-Host "This script requires at least version $RequiredHuduVersion and cannot run with version $CurrentVersion. Please update your version of Hudu."
+    exit 1
+}
+
+$DisallowedVersions = @([version]("2.37.0"), [version]("2.44.3"))
+if ($DisallowedVersions -contains [version]($CurrentVersion)) {write-host "disallowed version $($CurrentVersion); Please upgrade or downgrade if possible first." -ForegroundColor Red; exit 1;} else {write-host "$($CurrentVersion) is allowed!" -ForegroundColor Green};
+
+
 $ImageMap = @{}
 $ConfluenceToHuduUrlMap = @{}
 $Article_Relinking=@{}
