@@ -387,22 +387,3 @@ $encodedCreds = [System.Convert]::ToBase64String(
     [System.Text.Encoding]::ASCII.GetBytes("$($Confluence_Username):$($ConfluenceToken)")
 )
 
-$PowershellVersion = [version](Get-Host).Version
-$requiredPowershellVersion = [version]"7.5.0"
-Write-Host "Required PowerShell version: $requiredPowershellVersion" -ForegroundColor Blue
-
-if ($PowershellVersion -lt $requiredPowershellVersion) {
-    Write-Host "PowerShell $requiredPowershellVersion or higher is required. You have $PowershellVersion." -ForegroundColor Red
-    exit 1
-} else {
-    Write-Host "PowerShell version $PowershellVersion found" -ForegroundColor Green
-}
-
-
-$RequiredHuduVersion = "2.40.1"
-$HuduAppInfo = Get-HuduAppInfo
-$CurrentVersion = [version]$HuduAppInfo.version
-if ($CurrentVersion -lt [version]$RequiredHuduVersion) {
-    Write-Host "This script requires at least version $RequiredHuduVersion and cannot run with version $CurrentVersion. Please update your version of Hudu."
-    exit 1
-}
