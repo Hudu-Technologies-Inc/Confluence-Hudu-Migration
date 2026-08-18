@@ -39,7 +39,7 @@ if ($PowershellVersion -lt $requiredPowershellVersion) {
 }
 
 
-$RequiredHuduVersion = "2.40.1"
+$RequiredHuduVersion = "2.45.0"
 $HuduAppInfo = Get-HuduAppInfo
 $CurrentVersion = [version]$HuduAppInfo.version
 if ($CurrentVersion -lt [version]$RequiredHuduVersion) {
