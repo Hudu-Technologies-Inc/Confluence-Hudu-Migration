@@ -39,7 +39,7 @@ if ($PowershellVersion -lt $requiredPowershellVersion) {
 }
 
 
-$RequiredHuduVersion = "2.45.0"
+$RequiredHuduVersion = "2.44.0"
 $HuduAppInfo = Get-HuduAppInfo
 $CurrentVersion = [version]$HuduAppInfo.version
 if ($CurrentVersion -lt [version]$RequiredHuduVersion) {
@@ -47,7 +47,7 @@ if ($CurrentVersion -lt [version]$RequiredHuduVersion) {
     exit 1
 }
 
-$DisallowedVersions = @([version]("2.37.0"), [version]("2.44.3"))
+$DisallowedVersions = @([version]("2.37.0"))
 if ($DisallowedVersions -contains [version]($CurrentVersion)) {write-host "disallowed version $($CurrentVersion); Please upgrade or downgrade if possible first." -ForegroundColor Red; exit 1;} else {write-host "$($CurrentVersion) is allowed!" -ForegroundColor Green};
 
 
@@ -59,7 +59,7 @@ $RunSummary=@{
     CompletedStates=@()
     SetupInfo=@{
         HuduDestination     = $HuduBaseUrl
-        HuduMaxContentLength= 100000
+        HuduMaxContentLength= 196000
         ConfluenceSource    = $ConfluenceBaseUrl
         HuduVersion         = [version]$HuduAppInfo.version
         PowershellVersion   = [version]$PowershellVersion
@@ -284,6 +284,16 @@ foreach ($page in $SourcePages) {
         $page.CompanyId = $(Select-Object-From-List -message "Migrating Article: $($page.articlePreview ?? "no preview")... Which company to migrate into?" -objects $Attribution_Options).CompanyId
     }
 
+    if ($null -ne $page.CompanyId -and $page.CompanyId -eq -1) {
+        printandlog -message "Skipping page/article transfer for $($page.title)" -Color Gray
+        $RunSummary.Warnings+=@{
+            Message     =      "User Elected to skip page/article transfer for $($page.title)"
+            PageSkipped =      "Page with Confluence ID $($page.id), Titled $($page.title) was skipped by user. $($page.FullUrl ?? '')"
+        }
+        $RunSummary.JobInfo.Skipped+=1
+        continue
+    }
+
     # Resolve Hudu folder for this page (company-scoped migrations only)
     $folderId = $null
     if ($page.parentId) {
@@ -298,18 +308,10 @@ foreach ($page in $SourcePages) {
     #stub article
     if ($null -eq $page.CompanyId -or $page.CompanyId -lt 1) {
         printandlog -message "Stubbing global KB article" -Color yellow
-        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)"  -FolderId $folderId
-    } elseif ($page.CompanyId -lt 0) {
-        printandlog -message "Skipping page/article transfer for $($page.title)" -Color Gray
-        $RunSummary.Warnings+=@{
-            Message     =      "User Elected to skip page/article transfer for $($page.title)"
-            PageSkipped =      "Page with Confluence ID $($page.id), Titled $($page.title) was skipped by user. $($page.FullUrl ?? '')"
-        }
-        $RunSummary.JobInfo.Skipped+=1
-        continue
+        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "Migration stub. Final content will be populated after relinking."  -FolderId $folderId
     } else {
         printandlog -message "Stubbing KB article for Hudu company ID: $($page.CompanyId), folder: $($folderId ?? 'none')" -Color Yellow
-        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "stubbed preview - $($page.articlePreview)" -CompanyId $($page.CompanyId) -FolderId $folderId
+        $page.stub = New-HuduStubArticle -Title $($page.title) -Content "Migration stub. Final content will be populated after relinking." -CompanyId $($page.CompanyId) -FolderId $folderId
     }
     PrintAndLog -message "Article $($page.title) Stubbed with id $($($page.stub).id); $($($page.stub) | ConvertTo-Json -Depth 3)" -Color Green
 
@@ -330,6 +332,9 @@ foreach ($page in $SourcePages) {
         HuduUrl       = $page.stub.url
         ArticleId     = $page.stub.id
     })
+    foreach ($baseLink in $page.BaseLinks) {
+        $ConfluenceToHuduUrlMap[$baseLink] = $page.stub.url
+    }
     $StubbedPages+=$page
     Write-Progress -Activity "Stubbing $($page.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
 }
@@ -368,8 +373,12 @@ foreach ($page in $StubbedPages) {
                 SourceUrl          = $null
                 LocalPath          = $null
                 UploadResult       = $null
+                FileUploadResult   = $null
+                PublicPhotoResult  = $null
                 HuduArticleId      = $null
                 HuduUploadType     = $null
+                HuduFileUploadUrl  = $null
+                HuduPublicPhotoUrl = $null
                 SuccessDownload    = $false
                 AttachmentSize     = 0
                 AttachmentTooLarge = $false
@@ -395,21 +404,35 @@ foreach ($page in $StubbedPages) {
             }
             # Start attachment upload if download successful and meets criteria
             try {
-                PrintAndLog -Message "Uploading image: $($record.FileName) => record_id=$($($page.stub).id) record_type=Article" -Color Green
+                PrintAndLog -Message "Uploading attachment: $($record.FileName) => record_id=$($($page.stub).id) record_type=Article" -Color Green
                 $upload=$null
+                $fileUpload=$null
+                $publicPhoto=$null
+                $commonPublicPhotoExtensions = @('.jpg', '.jpeg', '.png', '.gif')
+                $shouldKeepUploadCopy = ($true -eq $record.IsImage -and $commonPublicPhotoExtensions -contains $record.Extension)
+
                 if ($true -eq $record.IsImage) {
-                    $upload = New-HuduPublicPhoto -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
-                    $upload = $upload.public_photo ?? $upload
+                    $publicPhoto = New-HuduPublicPhoto -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
+                    $publicPhoto = $publicPhoto.public_photo ?? $publicPhoto
+                    $upload = $publicPhoto
+
+                    if ($shouldKeepUploadCopy) {
+                        $fileUpload = New-HuduUpload -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
+                        $fileUpload = $fileUpload.upload ?? $fileUpload
+                    }
                 } else {
-                    $upload = New-HuduUpload -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
-                    $upload = $upload.upload ?? $upload
+                    $fileUpload = New-HuduUpload -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
+                    $fileUpload = $fileUpload.upload ?? $fileUpload
+                    $upload = $fileUpload
                 }
                 write-host "$($upload.slug)"
-                $uploadFileRef = if (-not [string]::IsNullOrWhiteSpace($upload.slug)) { $upload.slug } else { $upload.id }
-                $huduUploadUrl = if ($true -eq $record.IsImage) {
-                    $upload.url
+                $fileUploadRef = if ($fileUpload -and -not [string]::IsNullOrWhiteSpace($fileUpload.slug)) { $fileUpload.slug } elseif ($fileUpload) { $fileUpload.id } else { $null }
+                $huduFileUploadUrl = if ($fileUploadRef) { "$HuduBaseUrl/file/$fileUploadRef" } else { $null }
+                $huduPublicPhotoUrl = if ($publicPhoto) { $publicPhoto.url ?? "$HuduBaseUrl/public_photo/$($publicPhoto.id)" } else { $null }
+                $huduUploadUrl = if ($publicPhoto) {
+                    $huduPublicPhotoUrl
                 } else {
-                    "$HuduBaseUrl/file/$uploadFileRef"
+                    $huduFileUploadUrl
                 }
                 $AllNewLinks.Add([PSCustomObject]@{
                     PageId        = $page.id
@@ -418,19 +441,40 @@ foreach ($page in $StubbedPages) {
                     HuduUrl       = $huduUploadUrl
                     HuduUploadId  = $upload.id
                     HuduUploadSlug= $upload.slug
+                    HuduUploadType= if ($publicPhoto) { 'public_photo' } else { 'upload' }
                 })
+                if ($fileUpload -and $publicPhoto) {
+                    $AllNewLinks.Add([PSCustomObject]@{
+                        PageId        = $page.id
+                        PageTitle     = $page.title
+                        LocalFile     = $record.FileName
+                        HuduUrl       = $huduFileUploadUrl
+                        HuduUploadId  = $fileUpload.id
+                        HuduUploadSlug= $fileUpload.slug
+                        HuduUploadType= 'upload'
+                    })
+                }
                 $normalizedFileName = $record.FileName.ToLowerInvariant()
                 $ImageMap[$normalizedFileName] = @{
-                  Id   = $upload.id
-                  Slug = $upload.slug
-                  Url  = $huduUploadUrl
-                  Type = if ($true -eq $record.IsImage) { 'image' } else { 'upload' }
+                  Id             = $upload.id
+                  Slug           = $upload.slug
+                  Url            = $huduUploadUrl
+                  Type           = if ($publicPhoto) { 'image' } else { 'upload' }
+                  FileUploadId   = $fileUpload.id
+                  FileUploadSlug = $fileUpload.slug
+                  FileUploadUrl  = $huduFileUploadUrl
+                  PublicPhotoId  = $publicPhoto.id
+                  PublicPhotoUrl = $huduPublicPhotoUrl
                 }
 
                 $record.UploadResult    = $upload
+                $record.FileUploadResult = $fileUpload
+                $record.PublicPhotoResult = $publicPhoto
                 $record.HuduUploadType  = $ImageMap[$normalizedFileName].Type
+                $record.HuduFileUploadUrl = $huduFileUploadUrl
+                $record.HuduPublicPhotoUrl = $huduPublicPhotoUrl
                 $record.HuduArticleId   = $($page.stub).id
-                $RunSummary.JobInfo.UploadsCreated += 1
+                $RunSummary.JobInfo.UploadsCreated += if ($fileUpload -and $publicPhoto) { 2 } else { 1 }
             } catch {
                 $ErrorInfo=@{
                     Error       =$_
@@ -481,60 +525,13 @@ foreach ($page in $StubbedPages) {
     Save-HtmlSnapshot -PageId $page.id -Title $page.title -Content $($page.updatedHtml) -Suffix "after" -OutDir $TmpOutputDir
 
 
-    PrintAndLog "Populating Article: $($page.articlePreview) to $($($page.CompanyId) ?? 'Global KB') with relinked contents" -Color Green
-
-    if ($($page.updatedHtml).Length -gt $RunSummary.SetupInfo.HuduMaxContentLength) {
-        PrintAndLog "Content Length Warning: Content, even after stripping bloat is too large. Safe-Maximum is $($RunSummary.SetupInfo.HuduMaxContentLength) Characters, and this is $($($page.updatedHtml).length) chars long! Adding as attached document!"
-        $htmlPath = Join-Path $TmpOutputDir -ChildPath ("LargeDoc_{0}.html" -f (Get-SafeFilename ([IO.Path]::GetFileNameWithoutExtension($($page.title)))))
-        Set-Content -Path $htmlPath -Value $($page.updatedHtml) -Encoding UTF8
-
-        $htmlAttachment = New-HuduUpload -FilePath $htmlPath -record_id $($page.stub).id -record_type 'Article'
-        $htmlAttachment = $htmlAttachment.upload ?? $htmlAttachment
-        # $AllNewLinks+=$htmlAttachment.url
-
-        $htmlAttachmentFileRef = if (-not [string]::IsNullOrWhiteSpace($htmlAttachment.slug)) { $htmlAttachment.slug } else { $htmlAttachment.id }
-        $FinalContents = "Full content too long. See attached file: <a href='$HuduBaseUrl/file/$htmlAttachmentFileRef'>$($page.title).html</a>"
-    } else {
-        $FinalContents=$($($page.updatedHtml) ?? "unknown contents")
-    }
-    try {
-        if ($null -ne $($page.CompanyId) -and $($page.CompanyId) -ne -1) {
-            $page.HuduArticle = $(Set-HuduArticle -ArticleId $($page.stub).id -Content $FinalContents -name $($($page.title) ?? "Unknown Title") -CompanyId $($page.CompanyId))
-        } else {
-            $page.HuduArticle = $(Set-HuduArticle -ArticleId $($page.stub).id -Content $FinalContents -name $($($page.title) ?? "Unknown Title"))
-        }
-        $page.HuduArticle = $page.HuduArticle.article ?? $page.HuduArticle
-        
-    } catch {
-        # Handle articles that are too large having an issue during file upload / linking
-        $ErrorInfo=@{
-            Message="Error Uploading article with content that is too long: $($page.title)"
-            Error=$_
-            HuduArticle=$(Get-HuduArticles -id $($page.stub).id).Article
-            Page = "Confluence page with Id $($page.id), titled $($page.title)- $($page.FullUrl ?? '')"
-            ArticleURL=$($page.stub.url ?? "URL not found")
-        }
-        $RunSummary.Errors.add($ErrorInfo)
-        $RunSummary.JobInfo.ArticlesErrored+=1
-        Write-ErrorObjectsToFile -name "largearticle-$($page.title)" -ErrorObject $ErrorInfo
-        continue
-    }
-
-    if ($true -eq $UploadedAsDoc) {
-        # Add a warning for articles that are too large being uploaded as linked standalone file
-        $RunSummary.Warnings.add(@{
-            Warning="Document from page $($page.title) was too large and was uploaded as standalone HTML File; Please review."
-            ArticleURL=$htmlAttachment.Article.url ?? ($page.stub.url ?? "URL not found")
-            PageURL=$page.FullUrl ?? ("$baseUrl$($page._links.webui)" ?? "URL not found")
-        })
-        continue
-    }
+    PrintAndLog "Prepared Article: $($page.articlePreview) to $($($page.CompanyId) ?? 'Global KB') with attachment links converted. Final content update is deferred until relinking." -Color Green
 
     # Track relinking info. we'll want to relink articles/pages after all are created.
     $Article_Relinking[$($page.stub).id]=[PSCustomObject]@{
-        HuduArticle    = $(Get-HuduArticles -id $($page.stub).id).article
+        HuduArticle    = $page.stub
         Page           = $page
-        content        = $FinalContents ?? $($page.updatedHtml)
+        content        = $page.updatedHtml ?? "unknown contents"
         Links          = $page.links
     }
     Write-Progress -Activity "Processing content for $($page.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
@@ -556,7 +553,7 @@ $PageIDX=0
 foreach ($id in $Article_Relinking.Keys) {
     $entry = $Article_Relinking[$id]
     $relPage = $entry.Page
-    $htmlContent = $relPage.updatedHtml ?? $entry.HuduArticle.content
+    $htmlContent = $entry.content ?? $relPage.updatedHtml ?? "unknown contents"
     $PageIDX=$PageIDX+1
 
     $pattern = 'https://' + [regex]::Escape($ConfluenceDomain) + '\.atlassian\.net[^"''\s<>]*'
@@ -618,14 +615,14 @@ foreach ($id in $Article_Relinking.Keys) {
     # 3. Replace legacy Confluence view links like ?pageId=98429
     $pageIdPattern = [regex]::Escape("pageId=$($entry.Page.id)")
     if ($htmlContent -match $pageIdPattern) {
-        $htmlContent = $htmlContent -replace $pageIdPattern, $huduUrl
+        $htmlContent = $htmlContent -replace $pageIdPattern, $entry.HuduArticle.url
         PrintAndLog -Message "Replaced legacy pageId=$($entry.Page.id)" -Color Green
     }
 
     # 4. Replace direct "page/<id>" references
     $pagePathPattern = [regex]::Escape("page/$($entry.Page.id)")
     if ($htmlContent -match $pagePathPattern) {
-        $htmlContent = $htmlContent -replace [regex]::Escape($pagePathPattern), $entry.HuduArticle.url
+        $htmlContent = $htmlContent -replace $pagePathPattern, $entry.HuduArticle.url
         PrintAndLog -Message "Replaced page/$($entry.Page.id) → $($entry.HuduArticle.url)" -Color Green
     }
 
@@ -638,12 +635,44 @@ foreach ($id in $Article_Relinking.Keys) {
     }
 
     $relPage.ReplacedLinks = $(Get-LinksFromHTML -htmlContent $htmlContent -title $relPage.title -includeImages $false)
-    $response = Set-HuduArticle -ArticleId $id -Content $htmlContent -Name $relPage.title
-    $relPage.HuduArticle = $response.Article ?? $response
-    PrintAndLog -Message "Updated article [$($relPage.title)] with length: $($htmlContent.Length)" -Color Cyan
+    $FinalContents = $htmlContent
+    try {
+        if ($FinalContents.Length -gt $RunSummary.SetupInfo.HuduMaxContentLength) {
+            PrintAndLog "Content Length Warning: Final relinked content is too large. Safe-Maximum is $($RunSummary.SetupInfo.HuduMaxContentLength) Characters, and this is $($FinalContents.length) chars long! Adding as attached document!"
+            $htmlPath = Join-Path $TmpOutputDir -ChildPath ("LargeDoc_{0}.html" -f (Get-SafeFilename ([IO.Path]::GetFileNameWithoutExtension($($relPage.title)))))
+            Set-Content -Path $htmlPath -Value $FinalContents -Encoding UTF8
 
-    # Optional: also update the Article_Relinking entry with new content
-    $Article_Relinking[$id].content = $relPage.HuduArticle.content
+            $htmlAttachment = New-HuduUpload -FilePath $htmlPath -record_id $id -record_type 'Article'
+            $htmlAttachment = $htmlAttachment.upload ?? $htmlAttachment
+
+            $htmlAttachmentFileRef = if (-not [string]::IsNullOrWhiteSpace($htmlAttachment.slug)) { $htmlAttachment.slug } else { $htmlAttachment.id }
+            $FinalContents = "Full content too long. See attached file: <a href='$HuduBaseUrl/file/$htmlAttachmentFileRef'>$($relPage.title).html</a>"
+
+            $RunSummary.Warnings.add(@{
+                Warning="Document from page $($relPage.title) was too large and was uploaded as standalone HTML File after relinking; Please review."
+                ArticleURL=$relPage.stub.url ?? "URL not found"
+                PageURL=$relPage.FullUrl ?? ("$ConfluenceBaseUrl$($relPage._links.webui)" ?? "URL not found")
+            })
+        }
+
+        $response = Set-HuduArticle -ArticleId $id -Content $FinalContents -Name $relPage.title
+        $relPage.HuduArticle = $response.Article ?? $response
+        PrintAndLog -Message "Updated article [$($relPage.title)] with length: $($FinalContents.Length)" -Color Cyan
+    } catch {
+        $ErrorInfo=@{
+            Message="Error finalizing article content: $($relPage.title)"
+            Error=$_
+            HuduArticle=$entry.HuduArticle
+            Page = "Confluence page with Id $($relPage.id), titled $($relPage.title)- $($relPage.FullUrl ?? '')"
+            ArticleURL=$($relPage.stub.url ?? "URL not found")
+        }
+        $RunSummary.Errors.add($ErrorInfo)
+        $RunSummary.JobInfo.ArticlesErrored+=1
+        Write-ErrorObjectsToFile -name "finalarticle-$($relPage.title)" -ErrorObject $ErrorInfo
+        continue
+    }
+
+    $Article_Relinking[$id].content = $FinalContents
 
     $relPage | ConvertTo-Json -Depth 10 | Out-File "$TmpOutputDir\completed-page-$($relPage.title).json"
     $AllReplacedLinks.Add($relPage.ReplacedLinks)

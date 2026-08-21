@@ -285,8 +285,12 @@ function Invoke-ConfluenceAttachDownload {
         SourceUrl          = $null
         LocalPath          = $localPath
         UploadResult       = $null
+        FileUploadResult   = $null
+        PublicPhotoResult  = $null
         HuduArticleId      = $null
         HuduUploadType     = $null
+        HuduFileUploadUrl  = $null
+        HuduPublicPhotoUrl = $null
         SuccessDownload    = $false
         AttachmentSize     = 0
         AttachmentTooLarge = $false
@@ -399,7 +403,7 @@ function Resolve-HuduFolder {
     param (
         [string]$ParentId,
         [string]$ParentType,
-        [int]$CompanyId=$null,
+        [nullable[int]]$CompanyId=$null,
         [string]$AuthHeader,
         [string]$BaseUrl
     )
@@ -409,9 +413,11 @@ function Resolve-HuduFolder {
     # Space homepage as parent = top-level page, no folder needed
     if ($ParentId -eq $script:SpaceHomepageId) { return $null }
 
-    # Already resolved this parent
-    if ($script:FolderCache.ContainsKey($ParentId)) {
-        return $script:FolderCache[$ParentId]
+    $cacheKey = "$($CompanyId ?? 'global'):$ParentId"
+
+    # Already resolved this parent for this destination scope
+    if ($script:FolderCache.ContainsKey($cacheKey)) {
+        return $script:FolderCache[$cacheKey]
     }
 
     # Build full path by walking up through pages and/or folders
@@ -424,13 +430,13 @@ function Resolve-HuduFolder {
 
     try {
         $folder = $null
-        if ($null -eq $CompanyId){
+        if ($null -eq $CompanyId -or $CompanyId -lt 1){
             $folder   = Initialize-HuduFolder -FolderPath $path
         } else {
             $folder   = Initialize-HuduFolder -FolderPath $path -CompanyId $CompanyId
         }
         $folderId = $folder.id
-        $script:FolderCache[$ParentId] = $folderId
+        $script:FolderCache[$cacheKey] = $folderId
         PrintAndLog "  📁 '$($path -join " → ")' → Hudu folder ID $folderId" -Color Cyan
         return $folderId
     } catch {
@@ -470,6 +476,27 @@ function Convert-ConfluenceHtml {
         }
 
         return $MapEntry.Id
+    }
+
+    function Get-HuduArticleContentUrl {
+        param(
+            [string]$Url,
+            [string]$FallbackPath,
+            [string]$HuduBaseUrl
+        )
+
+        $contentUrl = if (-not [string]::IsNullOrWhiteSpace($Url)) { $Url } else { $FallbackPath }
+
+        if ([string]::IsNullOrWhiteSpace($contentUrl)) {
+            return ''
+        }
+
+        $base = $HuduBaseUrl.TrimEnd('/')
+        if ($contentUrl.StartsWith($base, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $contentUrl.Substring($base.Length)
+        }
+
+        return $contentUrl
     }
 
     function Get-YouTubeEmbedUrl {
@@ -522,12 +549,12 @@ function Convert-ConfluenceHtml {
         $id = Get-HuduAttachmentReference -MapEntry $mapEntry
         $type = $mapEntry.Type
 
-        $publicPhotoUrl = "$HuduBaseUrl/public_photo/$id"
-        $fileUrl        = "$HuduBaseUrl/file/$id"
+        $publicPhotoUrl = Get-HuduArticleContentUrl -Url ($mapEntry.PublicPhotoUrl ?? $mapEntry.Url) -FallbackPath "/public_photo/$id" -HuduBaseUrl $HuduBaseUrl
+        $fileUrl        = Get-HuduArticleContentUrl -Url ($mapEntry.FileUploadUrl ?? $mapEntry.Url) -FallbackPath "/file/$id" -HuduBaseUrl $HuduBaseUrl
         $safeFilename   = Get-HtmlEncoded $Filename
 
         if ($type -eq 'image' -or $Filename -match '\.(gif|bmp|svg|png|jpe?g|webp)$') {
-            return "<figure><a href='$publicPhotoUrl' target='_blank'><img src='$publicPhotoUrl' alt='$safeFilename' /></a></figure>"
+            return "<figure><img src=""$publicPhotoUrl"" alt=""$safeFilename""></figure>"
         }
         elseif ($Filename -match '\.(mp4|mov|avi|mkv|webm|m4v)$') {
             return "<figure><video controls preload='metadata' src='$fileUrl'></video><figcaption>$safeFilename</figcaption></figure>"
