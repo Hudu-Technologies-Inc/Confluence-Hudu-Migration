@@ -373,8 +373,12 @@ foreach ($page in $StubbedPages) {
                 SourceUrl          = $null
                 LocalPath          = $null
                 UploadResult       = $null
+                FileUploadResult   = $null
+                PublicPhotoResult  = $null
                 HuduArticleId      = $null
                 HuduUploadType     = $null
+                HuduFileUploadUrl  = $null
+                HuduPublicPhotoUrl = $null
                 SuccessDownload    = $false
                 AttachmentSize     = 0
                 AttachmentTooLarge = $false
@@ -400,21 +404,35 @@ foreach ($page in $StubbedPages) {
             }
             # Start attachment upload if download successful and meets criteria
             try {
-                PrintAndLog -Message "Uploading image: $($record.FileName) => record_id=$($($page.stub).id) record_type=Article" -Color Green
+                PrintAndLog -Message "Uploading attachment: $($record.FileName) => record_id=$($($page.stub).id) record_type=Article" -Color Green
                 $upload=$null
+                $fileUpload=$null
+                $publicPhoto=$null
+                $commonPublicPhotoExtensions = @('.jpg', '.jpeg', '.png', '.gif')
+                $shouldKeepUploadCopy = ($true -eq $record.IsImage -and $commonPublicPhotoExtensions -contains $record.Extension)
+
                 if ($true -eq $record.IsImage) {
-                    $upload = New-HuduPublicPhoto -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
-                    $upload = $upload.public_photo ?? $upload
+                    $publicPhoto = New-HuduPublicPhoto -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
+                    $publicPhoto = $publicPhoto.public_photo ?? $publicPhoto
+                    $upload = $publicPhoto
+
+                    if ($shouldKeepUploadCopy) {
+                        $fileUpload = New-HuduUpload -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
+                        $fileUpload = $fileUpload.upload ?? $fileUpload
+                    }
                 } else {
-                    $upload = New-HuduUpload -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
-                    $upload = $upload.upload ?? $upload
+                    $fileUpload = New-HuduUpload -FilePath $record.LocalPath -record_id $($page.stub).id -record_type 'Article'
+                    $fileUpload = $fileUpload.upload ?? $fileUpload
+                    $upload = $fileUpload
                 }
                 write-host "$($upload.slug)"
-                $uploadFileRef = if (-not [string]::IsNullOrWhiteSpace($upload.slug)) { $upload.slug } else { $upload.id }
-                $huduUploadUrl = if ($true -eq $record.IsImage) {
-                    $upload.url
+                $fileUploadRef = if ($fileUpload -and -not [string]::IsNullOrWhiteSpace($fileUpload.slug)) { $fileUpload.slug } elseif ($fileUpload) { $fileUpload.id } else { $null }
+                $huduFileUploadUrl = if ($fileUploadRef) { "$HuduBaseUrl/file/$fileUploadRef" } else { $null }
+                $huduPublicPhotoUrl = if ($publicPhoto) { $publicPhoto.url ?? "$HuduBaseUrl/public_photo/$($publicPhoto.id)" } else { $null }
+                $huduUploadUrl = if ($publicPhoto) {
+                    $huduPublicPhotoUrl
                 } else {
-                    "$HuduBaseUrl/file/$uploadFileRef"
+                    $huduFileUploadUrl
                 }
                 $AllNewLinks.Add([PSCustomObject]@{
                     PageId        = $page.id
@@ -423,19 +441,40 @@ foreach ($page in $StubbedPages) {
                     HuduUrl       = $huduUploadUrl
                     HuduUploadId  = $upload.id
                     HuduUploadSlug= $upload.slug
+                    HuduUploadType= if ($publicPhoto) { 'public_photo' } else { 'upload' }
                 })
+                if ($fileUpload -and $publicPhoto) {
+                    $AllNewLinks.Add([PSCustomObject]@{
+                        PageId        = $page.id
+                        PageTitle     = $page.title
+                        LocalFile     = $record.FileName
+                        HuduUrl       = $huduFileUploadUrl
+                        HuduUploadId  = $fileUpload.id
+                        HuduUploadSlug= $fileUpload.slug
+                        HuduUploadType= 'upload'
+                    })
+                }
                 $normalizedFileName = $record.FileName.ToLowerInvariant()
                 $ImageMap[$normalizedFileName] = @{
-                  Id   = $upload.id
-                  Slug = $upload.slug
-                  Url  = $huduUploadUrl
-                  Type = if ($true -eq $record.IsImage) { 'image' } else { 'upload' }
+                  Id             = $upload.id
+                  Slug           = $upload.slug
+                  Url            = $huduUploadUrl
+                  Type           = if ($publicPhoto) { 'image' } else { 'upload' }
+                  FileUploadId   = $fileUpload.id
+                  FileUploadSlug = $fileUpload.slug
+                  FileUploadUrl  = $huduFileUploadUrl
+                  PublicPhotoId  = $publicPhoto.id
+                  PublicPhotoUrl = $huduPublicPhotoUrl
                 }
 
                 $record.UploadResult    = $upload
+                $record.FileUploadResult = $fileUpload
+                $record.PublicPhotoResult = $publicPhoto
                 $record.HuduUploadType  = $ImageMap[$normalizedFileName].Type
+                $record.HuduFileUploadUrl = $huduFileUploadUrl
+                $record.HuduPublicPhotoUrl = $huduPublicPhotoUrl
                 $record.HuduArticleId   = $($page.stub).id
-                $RunSummary.JobInfo.UploadsCreated += 1
+                $RunSummary.JobInfo.UploadsCreated += if ($fileUpload -and $publicPhoto) { 2 } else { 1 }
             } catch {
                 $ErrorInfo=@{
                     Error       =$_

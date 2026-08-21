@@ -285,8 +285,12 @@ function Invoke-ConfluenceAttachDownload {
         SourceUrl          = $null
         LocalPath          = $localPath
         UploadResult       = $null
+        FileUploadResult   = $null
+        PublicPhotoResult  = $null
         HuduArticleId      = $null
         HuduUploadType     = $null
+        HuduFileUploadUrl  = $null
+        HuduPublicPhotoUrl = $null
         SuccessDownload    = $false
         AttachmentSize     = 0
         AttachmentTooLarge = $false
