@@ -478,6 +478,27 @@ function Convert-ConfluenceHtml {
         return $MapEntry.Id
     }
 
+    function Get-HuduArticleContentUrl {
+        param(
+            [string]$Url,
+            [string]$FallbackPath,
+            [string]$HuduBaseUrl
+        )
+
+        $contentUrl = if (-not [string]::IsNullOrWhiteSpace($Url)) { $Url } else { $FallbackPath }
+
+        if ([string]::IsNullOrWhiteSpace($contentUrl)) {
+            return ''
+        }
+
+        $base = $HuduBaseUrl.TrimEnd('/')
+        if ($contentUrl.StartsWith($base, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $contentUrl.Substring($base.Length)
+        }
+
+        return $contentUrl
+    }
+
     function Get-YouTubeEmbedUrl {
         param([string]$Url)
 
@@ -528,12 +549,12 @@ function Convert-ConfluenceHtml {
         $id = Get-HuduAttachmentReference -MapEntry $mapEntry
         $type = $mapEntry.Type
 
-        $publicPhotoUrl = "$HuduBaseUrl/public_photo/$id"
-        $fileUrl        = "$HuduBaseUrl/file/$id"
+        $publicPhotoUrl = Get-HuduArticleContentUrl -Url ($mapEntry.PublicPhotoUrl ?? $mapEntry.Url) -FallbackPath "/public_photo/$id" -HuduBaseUrl $HuduBaseUrl
+        $fileUrl        = Get-HuduArticleContentUrl -Url ($mapEntry.FileUploadUrl ?? $mapEntry.Url) -FallbackPath "/file/$id" -HuduBaseUrl $HuduBaseUrl
         $safeFilename   = Get-HtmlEncoded $Filename
 
         if ($type -eq 'image' -or $Filename -match '\.(gif|bmp|svg|png|jpe?g|webp)$') {
-            return "<figure><a href='$publicPhotoUrl' target='_blank'><img src='$publicPhotoUrl' alt='$safeFilename' /></a></figure>"
+            return "<figure><img src=""$publicPhotoUrl"" alt=""$safeFilename""></figure>"
         }
         elseif ($Filename -match '\.(mp4|mov|avi|mkv|webm|m4v)$') {
             return "<figure><video controls preload='metadata' src='$fileUrl'></video><figcaption>$safeFilename</figcaption></figure>"
