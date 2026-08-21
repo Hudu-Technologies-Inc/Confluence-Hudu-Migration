@@ -284,7 +284,7 @@ foreach ($page in $SourcePages) {
         $page.CompanyId = $(Select-Object-From-List -message "Migrating Article: $($page.articlePreview ?? "no preview")... Which company to migrate into?" -objects $Attribution_Options).CompanyId
     }
 
-    if ($page.CompanyId -lt 0) {
+    if ($null -ne $page.CompanyId -and $page.CompanyId -eq -1) {
         printandlog -message "Skipping page/article transfer for $($page.title)" -Color Gray
         $RunSummary.Warnings+=@{
             Message     =      "User Elected to skip page/article transfer for $($page.title)"
