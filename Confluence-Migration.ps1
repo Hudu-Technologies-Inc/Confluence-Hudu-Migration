@@ -47,7 +47,7 @@ if ($CurrentVersion -lt [version]$RequiredHuduVersion) {
     exit 1
 }
 
-$DisallowedVersions = @([version]("2.37.0"), [version]("2.44.3"))
+$DisallowedVersions = @([version]("2.37.0"))
 if ($DisallowedVersions -contains [version]($CurrentVersion)) {write-host "disallowed version $($CurrentVersion); Please upgrade or downgrade if possible first." -ForegroundColor Red; exit 1;} else {write-host "$($CurrentVersion) is allowed!" -ForegroundColor Green};
 
 
@@ -284,6 +284,16 @@ foreach ($page in $SourcePages) {
         $page.CompanyId = $(Select-Object-From-List -message "Migrating Article: $($page.articlePreview ?? "no preview")... Which company to migrate into?" -objects $Attribution_Options).CompanyId
     }
 
+    if ($page.CompanyId -lt 0) {
+        printandlog -message "Skipping page/article transfer for $($page.title)" -Color Gray
+        $RunSummary.Warnings+=@{
+            Message     =      "User Elected to skip page/article transfer for $($page.title)"
+            PageSkipped =      "Page with Confluence ID $($page.id), Titled $($page.title) was skipped by user. $($page.FullUrl ?? '')"
+        }
+        $RunSummary.JobInfo.Skipped+=1
+        continue
+    }
+
     # Resolve Hudu folder for this page (company-scoped migrations only)
     $folderId = $null
     if ($page.parentId) {
@@ -299,14 +309,6 @@ foreach ($page in $SourcePages) {
     if ($null -eq $page.CompanyId -or $page.CompanyId -lt 1) {
         printandlog -message "Stubbing global KB article" -Color yellow
         $page.stub = New-HuduStubArticle -Title $($page.title) -Content "Migration stub. Final content will be populated after relinking."  -FolderId $folderId
-    } elseif ($page.CompanyId -lt 0) {
-        printandlog -message "Skipping page/article transfer for $($page.title)" -Color Gray
-        $RunSummary.Warnings+=@{
-            Message     =      "User Elected to skip page/article transfer for $($page.title)"
-            PageSkipped =      "Page with Confluence ID $($page.id), Titled $($page.title) was skipped by user. $($page.FullUrl ?? '')"
-        }
-        $RunSummary.JobInfo.Skipped+=1
-        continue
     } else {
         printandlog -message "Stubbing KB article for Hudu company ID: $($page.CompanyId), folder: $($folderId ?? 'none')" -Color Yellow
         $page.stub = New-HuduStubArticle -Title $($page.title) -Content "Migration stub. Final content will be populated after relinking." -CompanyId $($page.CompanyId) -FolderId $folderId

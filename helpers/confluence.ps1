@@ -399,7 +399,7 @@ function Resolve-HuduFolder {
     param (
         [string]$ParentId,
         [string]$ParentType,
-        [int]$CompanyId=$null,
+        [nullable[int]]$CompanyId=$null,
         [string]$AuthHeader,
         [string]$BaseUrl
     )
@@ -409,9 +409,11 @@ function Resolve-HuduFolder {
     # Space homepage as parent = top-level page, no folder needed
     if ($ParentId -eq $script:SpaceHomepageId) { return $null }
 
-    # Already resolved this parent
-    if ($script:FolderCache.ContainsKey($ParentId)) {
-        return $script:FolderCache[$ParentId]
+    $cacheKey = "$($CompanyId ?? 'global'):$ParentId"
+
+    # Already resolved this parent for this destination scope
+    if ($script:FolderCache.ContainsKey($cacheKey)) {
+        return $script:FolderCache[$cacheKey]
     }
 
     # Build full path by walking up through pages and/or folders
@@ -424,13 +426,13 @@ function Resolve-HuduFolder {
 
     try {
         $folder = $null
-        if ($null -eq $CompanyId){
+        if ($null -eq $CompanyId -or $CompanyId -lt 1){
             $folder   = Initialize-HuduFolder -FolderPath $path
         } else {
             $folder   = Initialize-HuduFolder -FolderPath $path -CompanyId $CompanyId
         }
         $folderId = $folder.id
-        $script:FolderCache[$ParentId] = $folderId
+        $script:FolderCache[$cacheKey] = $folderId
         PrintAndLog "  📁 '$($path -join " → ")' → Hudu folder ID $folderId" -Color Cyan
         return $folderId
     } catch {
