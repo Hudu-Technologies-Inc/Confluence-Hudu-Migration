@@ -31,3 +31,4 @@ logs\errored\*
 !environment.example
 !*.example
 *environment*.ps1
+artifacts/*
