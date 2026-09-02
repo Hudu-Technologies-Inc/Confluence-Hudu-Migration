@@ -471,11 +471,19 @@ function Convert-ConfluenceHtml {
     function Get-HuduAttachmentReference {
         param([object]$MapEntry)
 
-        if ($MapEntry.Type -eq 'upload' -and -not [string]::IsNullOrWhiteSpace($MapEntry.Slug)) {
+        if ($MapEntry.Type -in @('upload', 'video', 'audio') -and -not [string]::IsNullOrWhiteSpace($MapEntry.Slug)) {
             return $MapEntry.Slug
         }
 
         return $MapEntry.Id
+    }
+
+    function Get-HuduEmbeddableUploadMediaKind {
+        param([Parameter(Mandatory)][string]$Path)
+        $extension = [IO.Path]::GetExtension($Path).ToLowerInvariant()
+        if ($extension -in @('.mp4', '.m4v', '.webm', '.ogv', '.mov', '.mkv')) { return 'Video' }
+        if ($extension -in @('.mp3', '.m4a', '.aac', '.wav', '.ogg', '.oga', '.opus', '.flac', '.weba')) { return 'Audio' }
+        return $null
     }
 
     function Get-HuduArticleContentUrl {
@@ -552,15 +560,24 @@ function Convert-ConfluenceHtml {
         $publicPhotoUrl = Get-HuduArticleContentUrl -Url ($mapEntry.PublicPhotoUrl ?? $mapEntry.Url) -FallbackPath "/public_photo/$id" -HuduBaseUrl $HuduBaseUrl
         $fileUrl        = Get-HuduArticleContentUrl -Url ($mapEntry.FileUploadUrl ?? $mapEntry.Url) -FallbackPath "/file/$id" -HuduBaseUrl $HuduBaseUrl
         $safeFilename   = Get-HtmlEncoded $Filename
+        $safeFileUrl    = Get-HtmlEncoded $fileUrl
+        $mediaKind      = $mapEntry.MediaKind
+
+        if ([string]::IsNullOrWhiteSpace($mediaKind)) {
+            $mediaKind = Get-HuduEmbeddableUploadMediaKind -Path $Filename
+        }
 
         if ($type -eq 'image' -or $Filename -match '\.(gif|bmp|svg|png|jpe?g|webp)$') {
             return "<figure><img src=""$publicPhotoUrl"" alt=""$safeFilename""></figure>"
         }
-        elseif ($Filename -match '\.(mp4|mov|avi|mkv|webm|m4v)$') {
-            return "<figure><video controls preload='metadata' src='$fileUrl'></video><figcaption>$safeFilename</figcaption></figure>"
+        elseif ($mediaKind -eq 'Video') {
+            return "<figure><video controls preload='metadata' src='$safeFileUrl'></video><figcaption>$safeFilename</figcaption></figure>"
+        }
+        elseif ($mediaKind -eq 'Audio') {
+            return "<figure><audio controls preload='metadata' src='$safeFileUrl'></audio><figcaption>$safeFilename</figcaption></figure>"
         }
         else {
-            return "<p><a href='$fileUrl'>$safeFilename</a></p>"
+            return "<p><a href='$safeFileUrl'>$safeFilename</a></p>"
         }
     }
 
@@ -579,8 +596,14 @@ function Convert-ConfluenceHtml {
             return "<figure><iframe width='560' height='315' src='$ytEmbed' title='Embedded video' frameborder='0' allowfullscreen></iframe></figure>"
         }
 
-        if ($decodedUrl -match '\.(mp4|mov|avi|mkv|webm|m4v)(\?|#|$)') {
+        $remoteMediaKind = Get-HuduEmbeddableUploadMediaKind -Path ($decodedUrl -replace '[?#].*$', '')
+
+        if ($remoteMediaKind -eq 'Video') {
             return "<figure><video controls preload='metadata' src='$safeUrl'></video></figure>"
+        }
+
+        if ($remoteMediaKind -eq 'Audio') {
+            return "<figure><audio controls preload='metadata' src='$safeUrl'></audio></figure>"
         }
 
         if ($decodedUrl -match '\.(gif|bmp|svg|png|jpe?g|webp)(\?|#|$)') {
@@ -622,6 +645,18 @@ function Convert-ConfluenceHtml {
             }
 
             Get-RemoteMediaMarkup -Url $url -AltText $alt
+        },
+        $regexOptions
+    )
+
+    # 3) view-file macro with ri:attachment
+    $Html = [regex]::Replace(
+        $Html,
+        '<ac:structured-macro\b[^>]*ac:name="view-file"[^>]*>.*?<ri:attachment\b[^>]*ri:filename="([^"]+)"[^>]*/>.*?</ac:structured-macro>',
+        {
+            param($m)
+            $filename = $m.Groups[1].Value
+            Get-HuduAttachmentMarkup -Filename $filename -ImageMap $ImageMap -HuduBaseUrl $HuduBaseUrl
         },
         $regexOptions
     )
@@ -801,7 +836,7 @@ function Cleanup-ResidualConfluenceHtml {
     )
 
     # Remove paragraphs that only wrap block elements
-    $Html = [regex]::Replace($Html, '<p>\s*(<(?:figure|table|h[1-6]|ul|ol)[^>]*>.*?</(?:figure|table|h[1-6]|ul|ol)>)\s*</p>', '$1', 'Singleline,IgnoreCase')
+    $Html = [regex]::Replace($Html, '<p\b[^>]*>\s*(<(?:figure|table|h[1-6]|ul|ol)[^>]*>.*?</(?:figure|table|h[1-6]|ul|ol)>)\s*</p>', '$1', 'Singleline,IgnoreCase')
 
     # Collapse repeated blank lines between tags
     $Html = [regex]::Replace($Html, '>\s{2,}<', '><')
