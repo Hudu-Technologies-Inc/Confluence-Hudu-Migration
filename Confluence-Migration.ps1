@@ -39,7 +39,7 @@ if ($PowershellVersion -lt $requiredPowershellVersion) {
 }
 
 
-$RequiredHuduVersion = "2.44.0"
+$RequiredHuduVersion = "2.45.0"
 $HuduAppInfo = Get-HuduAppInfo
 $CurrentVersion = [version]$HuduAppInfo.version
 if ($CurrentVersion -lt [version]$RequiredHuduVersion) {
@@ -54,6 +54,15 @@ if ($DisallowedVersions -contains [version]($CurrentVersion)) {write-host "disal
 $ImageMap = @{}
 $ConfluenceToHuduUrlMap = @{}
 $Article_Relinking=@{}
+
+function Get-HuduEmbeddableUploadMediaKind {
+  param([Parameter(Mandatory)][string]$Path)
+  $extension = [IO.Path]::GetExtension($Path).ToLowerInvariant()
+  if ($extension -in @('.mp4', '.m4v', '.webm', '.ogv', '.mov', '.mkv')) { return 'Video' }
+  if ($extension -in @('.mp3', '.m4a', '.aac', '.wav', '.ogg', '.oga', '.opus', '.flac', '.weba')) { return 'Audio' }
+  return $null
+}
+
 $RunSummary=@{
     State="Set-Up"
     CompletedStates=@()
@@ -103,7 +112,7 @@ if ($AllSpaces.Count -eq 0) {
 
 $SourcePages = @();
 try {$migrationRecord = Set-MigrationRecord} catch {}
-$RunSummary.JobInfo.MigrationSource=$(Select-Object-From-List -Objects @(
+$RunSummary.JobInfo.MigrationSource=$(Select-ObjectFromList -Objects @(
 [PSCustomObject]@{
     OptionMessage= "From a Single/Specific Confluence Space"
     Identifier = 0
@@ -115,7 +124,7 @@ $RunSummary.JobInfo.MigrationSource=$(Select-Object-From-List -Objects @(
 
 # Step 1- Obtain and record pages/attachments for space(s)
 if ([int]$RunSummary.JobInfo.MigrationSource.Identifier -eq 0) {
-    $SingleChosenSpace=$(Select-Object-From-List -Objects $AllSpaces - Message "From which single space would you like to migrate pages from?")  
+    $SingleChosenSpace=$(Select-ObjectFromList -Objects $AllSpaces - Message "From which single space would you like to migrate pages from?")  
     $RunSummary.JobInfo.Spaces.Add($SingleChosenSpace) | Out-Null
     $RunSummary.JobInfo.MigrationSource.OptionMessage="$($RunSummary.JobInfo.MigrationSource.OptionMessage) (space: $($SingleChosenSpace.name)/$($SingleChosenSpace.key))"
     $SourcePages=$(GetAllPages -SpaceKey $SingleChosenSpace.key -SpaceName $SingleChosenSpace.name -SpaceId $SingleChosenSpace.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
@@ -182,7 +191,7 @@ if ($RunSummary.JobInfo.PagesCount -eq 0) {
     $RunSummary.JobInfo.MigrationSource.OptionMessage="Migrate $($RunSummary.JobInfo.PagesCount) Articles/Pages $($RunSummary.JobInfo.MigrationSource.OptionMessage)"
     PrintAndLog -message "Elected to $($RunSummary.JobInfo.MigrationSource.OptionMessage)" -Color Yellow
 }
-if ($(Select-Object-From-List -objects @("yes","no") -message "does this look like the correct source data?") -eq "no") {write-error "please re-invoke to start over."; exit 1}
+if ($(Select-ObjectFromList -objects @("yes","no") -message "does this look like the correct source data?") -eq "no") {write-error "please re-invoke to start over."; exit 1}
 
 
 # Step 2: Present Options for Hudu / Destination
@@ -192,7 +201,7 @@ if ($all_companies.Count -eq 0) {
     PrintAndLog -message  "Sorry, we didnt seem to see any Companies set up in Hudu... If you intend to attribute certain articles to certain companies, be sure to add your companies first!" -Color Red
 }
 $Attribution_Options=[System.Collections.ArrayList]@()
-$RunSummary.JobInfo.MigrationDest=$(Select-Object-From-List -Objects @(
+$RunSummary.JobInfo.MigrationDest=$(Select-ObjectFromList -Objects @(
     [PSCustomObject]@{
         OptionMessage= "To a Single Specific Company in Hudu"
         Identifier = 0
@@ -208,7 +217,7 @@ $RunSummary.JobInfo.MigrationDest=$(Select-Object-From-List -Objects @(
 
 
 if ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 0) {
-    $SingleCompanyChoice=$(Select-Object-From-List -Objects $all_companies -message "Which company to $($SourcePages.OptionMessage) ($($SourcePages.count)) articles to?")
+    $SingleCompanyChoice=$(Select-ObjectFromList -Objects $all_companies -message "Which company to $($SourcePages.OptionMessage) ($($SourcePages.count)) articles to?")
     $Attribution_Options=[PSCustomObject]@{
         CompanyId            = $SingleCompanyChoice.Id
         CompanyName          = $SingleCompanyChoice.Name
@@ -281,7 +290,7 @@ foreach ($page in $SourcePages) {
     } elseif ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 1) {
         $page.CompanyId = $null  # global KB
     } else {
-        $page.CompanyId = $(Select-Object-From-List -message "Migrating Article: $($page.articlePreview ?? "no preview")... Which company to migrate into?" -objects $Attribution_Options).CompanyId
+        $page.CompanyId = $(Select-ObjectFromList -message "Migrating Article: $($page.articlePreview ?? "no preview")... Which company to migrate into?" -objects $Attribution_Options).CompanyId
     }
 
     if ($null -ne $page.CompanyId -and $page.CompanyId -eq -1) {
@@ -455,11 +464,13 @@ foreach ($page in $StubbedPages) {
                     })
                 }
                 $normalizedFileName = $record.FileName.ToLowerInvariant()
+                $embeddableMediaKind = Get-HuduEmbeddableUploadMediaKind -Path $record.FileName
                 $ImageMap[$normalizedFileName] = @{
                   Id             = $upload.id
                   Slug           = $upload.slug
                   Url            = $huduUploadUrl
                   Type           = if ($publicPhoto) { 'image' } else { 'upload' }
+                  MediaKind      = $embeddableMediaKind
                   FileUploadId   = $fileUpload.id
                   FileUploadSlug = $fileUpload.slug
                   FileUploadUrl  = $huduFileUploadUrl
