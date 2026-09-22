@@ -218,6 +218,7 @@ if (-not $hasCompanies) {
 $destinationChoices = @()
 
 if ($hasCentralKb) {
+    write-host "Central KB core feature is enabled in Hudu"
     $centralOptionMessage = "To Global/Central Knowledge Base in Hudu (generalized / non-company-specific)"
     if (-not $hasCompanies) {
         $centralOptionMessage += " [no companies in Hudu to designate]"
@@ -229,18 +230,25 @@ if ($hasCentralKb) {
         OptionMessage = $centralOptionMessage
         Identifier    = 1
     }
+} else {
+    write-host "Central KB core feature is not enabled in Hudu, not allowing it as option."
 }
 
-if ($hasCompanyKb -and $hasCompanies) {
-    $destinationChoices += [PSCustomObject]@{
-        OptionMessage = "To a Single Specific Company in Hudu"
-        Identifier    = 0
-    }
+if ($hasCompanyKb) {
+    write-host "Company KB core feature is enabled in Hudu"
+    if ($true -eq $hasCompanies){
+        $destinationChoices += [PSCustomObject]@{
+            OptionMessage = "To a Single Specific Company in Hudu"
+            Identifier    = 0
+        }
 
-    $destinationChoices += [PSCustomObject]@{
-        OptionMessage = "To Multiple Companies in Hudu - Let Me Choose for Each article ($(@($all_companies).Count) available destination company choices)"
-        Identifier    = 2
+        $destinationChoices += [PSCustomObject]@{
+            OptionMessage = "To Multiple Companies in Hudu - Let Me Choose for Each article ($(@($all_companies).Count) available destination company choices)"
+            Identifier    = 2
+        }
     }
+} else {
+    write-host "Company KB core feature is not enabled in Hudu, not allowing it as option."
 }
 
 if ($destinationChoices.Count -eq 0) {
