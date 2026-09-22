@@ -39,7 +39,7 @@ if ($PowershellVersion -lt $requiredPowershellVersion) {
 }
 
 
-$RequiredHuduVersion = "2.45.0"
+$RequiredHuduVersion = "2.46.0"
 $HuduAppInfo = Get-HuduAppInfo
 $CurrentVersion = [version]$HuduAppInfo.version
 if ($CurrentVersion -lt [version]$RequiredHuduVersion) {
@@ -50,7 +50,12 @@ if ($CurrentVersion -lt [version]$RequiredHuduVersion) {
 $DisallowedVersions = @([version]("2.37.0"))
 if ($DisallowedVersions -contains [version]($CurrentVersion)) {write-host "disallowed version $($CurrentVersion); Please upgrade or downgrade if possible first." -ForegroundColor Red; exit 1;} else {write-host "$($CurrentVersion) is allowed!" -ForegroundColor Green};
 
+$articlesEnabled = Get-HuduFeatureAvailability -Core_Feature articles
 
+if ($false -eq $articlesEnabled.CentralKB -and $false -eq $articlesEnabled.CompanyKB) {
+    Write-Host "Articles feature is not enabled in Hudu. Exiting script." -ForegroundColor Red
+    exit 1
+}
 $ImageMap = @{}
 $ConfluenceToHuduUrlMap = @{}
 $Article_Relinking=@{}
@@ -197,24 +202,61 @@ if ($(Select-ObjectFromList -objects @("yes","no") -message "does this look like
 # Step 2: Present Options for Hudu / Destination
 PrintAndLog -message  "Getting All Companies and configuring destination options (Hudu-Side)" -Color Blue
 $all_companies = Get-HuduCompanies
-if ($all_companies.Count -eq 0) {
-    PrintAndLog -message  "Sorry, we didnt seem to see any Companies set up in Hudu... If you intend to attribute certain articles to certain companies, be sure to add your companies first!" -Color Red
+$hasCentralKb = $true -eq $articlesEnabled.CentralKB
+$hasCompanyKb = $true -eq $articlesEnabled.CompanyKB
+$hasCompanies = @($all_companies).Count -gt 0
+
+if (-not $hasCentralKb -and -not $hasCompanyKb) {
+    Write-Warning "Articles are not enabled for Central KB or Company KB in Hudu. Enable at least one article destination before proceeding."
+    exit 1
+}
+
+if (-not $hasCompanies) {
+    PrintAndLog -message  "Sorry, we didnt seem to see any Companies set up in Hudu... If you intend to attribute certain articles to certain companies, be sure to add your companies first!" -Color Yellow
+}
+
+$destinationChoices = @()
+
+if ($hasCentralKb) {
+    write-host "Central KB core feature is enabled in Hudu"
+    $centralOptionMessage = "To Global/Central Knowledge Base in Hudu (generalized / non-company-specific)"
+    if (-not $hasCompanies) {
+        $centralOptionMessage += " [no companies in Hudu to designate]"
+    } elseif (-not $hasCompanyKb) {
+        $centralOptionMessage += " [company KB is not enabled in Hudu]"
+    }
+
+    $destinationChoices += [PSCustomObject]@{
+        OptionMessage = $centralOptionMessage
+        Identifier    = 1
+    }
+} else {
+    write-host "Central KB core feature is not enabled in Hudu, not allowing it as option."
+}
+
+if ($hasCompanyKb) {
+    write-host "Company KB core feature is enabled in Hudu"
+    if ($true -eq $hasCompanies){
+        $destinationChoices += [PSCustomObject]@{
+            OptionMessage = "To a Single Specific Company in Hudu"
+            Identifier    = 0
+        }
+
+        $destinationChoices += [PSCustomObject]@{
+            OptionMessage = "To Multiple Companies in Hudu - Let Me Choose for Each article ($(@($all_companies).Count) available destination company choices)"
+            Identifier    = 2
+        }
+    }
+} else {
+    write-host "Company KB core feature is not enabled in Hudu, not allowing it as option."
+}
+
+if ($destinationChoices.Count -eq 0) {
+    Write-Warning "No valid Hudu article destination is available. Company KB is enabled but there are no companies, and Central KB is not enabled."
+    exit 1
 }
 $Attribution_Options=[System.Collections.ArrayList]@()
-$RunSummary.JobInfo.MigrationDest=$(Select-ObjectFromList -Objects @(
-    [PSCustomObject]@{
-        OptionMessage= "To a Single Specific Company in Hudu"
-        Identifier = 0
-    },
-    [PSCustomObject]@{
-        OptionMessage= "To Global/Central Knowledge Base in Hudu (generalized / non-company-specific)"
-        Identifier = 1
-    }, 
-    [PSCustomObject]@{
-        OptionMessage= "To Multiple Companies in Hudu - Let Me Choose for Each article ($($all_companies.count) available destination company choices)"
-        Identifier = 2
-    }) -message "Configure Destination (Hudu-Side) Options- $($RunSummary.JobInfo.MigrationSource.OptionMessage) to where in Hudu?" -allowNull $false)
-
+$RunSummary.JobInfo.MigrationDest=$(Select-ObjectFromList -Objects $destinationChoices -message "Configure Destination (Hudu-Side) Options- $($RunSummary.JobInfo.MigrationSource.OptionMessage) to where in Hudu?" -allowNull $false)
 
 if ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 0) {
     $SingleCompanyChoice=$(Select-ObjectFromList -Objects $all_companies -message "Which company to $($SourcePages.OptionMessage) ($($SourcePages.count)) articles to?")
@@ -241,11 +283,13 @@ if ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 0) {
             IsGlobalKB           = $false
         }
     }
-    $Attribution_Options+=[PSCustomObject]@{
-        CompanyId            = 0
-        CompanyName          = "Global KB"
-        OptionMessage        = "No Company Attribution (Upload As Global/Central KnowledgeBase Article)"
-        IsGlobalKB           = $true
+    if ($hasCentralKb) {
+        $Attribution_Options+=[PSCustomObject]@{
+            CompanyId            = 0
+            CompanyName          = "Global KB"
+            OptionMessage        = "No Company Attribution (Upload As Global/Central KnowledgeBase Article)"
+            IsGlobalKB           = $true
+        }
     }
     $Attribution_Options+=[PSCustomObject]@{
         CompanyId            = -1

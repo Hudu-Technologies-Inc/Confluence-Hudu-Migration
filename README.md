@@ -10,7 +10,7 @@ Easily transfer your Confluence pages over to Hudu!
 
 Ensure you have:
 
-- Hudu instance ready to go with your API key on-hand (version 2.45.0 or newer required)
+- Hudu instance ready to go with your API key on-hand (version 2.46.0 or newer required)
 - Confluence instance ready to transfer with API key on-hand, associated username (email)
 - Powershell 7.5.0 or later is reccomended for running this script
 
@@ -45,6 +45,12 @@ After entering these, your credentials are verified and encoded and we verify yo
 ## Setup
 
 If you plan on migrating articles to individual companies, you'll want to first create those companies in Hudu, so they can be attributed as you like.
+
+> [!IMPORTANT]
+> whether you intend to move articles to central kb or company kb (or both) make sure that your Hudu instance does not have these core features switched off first.
+
+<img width="2322" height="2338" alt="image" src="https://github.com/user-attachments/assets/c97bbc43-9d17-4b96-844d-2961e09355d4" />
+
 
 You'll be asked just a few questions- firstly, source space(s) for your confluence articles.
 You can decide to:
