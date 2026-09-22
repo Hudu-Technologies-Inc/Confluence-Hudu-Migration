@@ -46,7 +46,11 @@ After entering these, your credentials are verified and encoded and we verify yo
 
 If you plan on migrating articles to individual companies, you'll want to first create those companies in Hudu, so they can be attributed as you like.
 
-whether you intend to move articles to central kb or company kb (or both) make sure that your Hudu instance does not have these core features switched off first.
+> [!IMPORTANT]
+> whether you intend to move articles to central kb or company kb (or both) make sure that your Hudu instance does not have these core features switched off first.
+
+<img width="2322" height="2338" alt="image" src="https://github.com/user-attachments/assets/c97bbc43-9d17-4b96-844d-2961e09355d4" />
+
 
 You'll be asked just a few questions- firstly, source space(s) for your confluence articles.
 You can decide to:
