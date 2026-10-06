@@ -3,6 +3,8 @@ $ConfluenceDomain = "yoururl.atlassian.net" #'hudu-integrations' would be valid 
 $Confluence_Username = "confluence-email@tld.net"
 $HuduBaseURL = "https://yoururlhere"
 $HuduAPIKey = ""
+$SkipArchivedConfluenceContent = $true # skips Confluence pages whose API status is not current
 $ExportConfluenceTables = $false # or set $env:CONFLUENCE_EXPORT_TABLES = "true"
 $ConfluenceTableSchemaMatchThreshold = 0.86
+$userDataDir = "x:\tegrity" # fully qualified path to store data and logs
 . .\Confluence-Migration.ps1

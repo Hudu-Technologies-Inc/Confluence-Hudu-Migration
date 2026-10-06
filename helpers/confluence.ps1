@@ -196,7 +196,8 @@ function GetAllPages {
         [string]$SpaceName,
         [string]$authHeader,
         [string]$SpaceId = "",
-        [string]$ContentType = "page"
+        [string]$ContentType = "page",
+        [bool]$SkipArchived = $true
     )
 
     $AllPages = @()
@@ -204,9 +205,11 @@ function GetAllPages {
 
     # Use v2 API if SpaceId provided, fall back to v1 if not
     if ($SpaceId -ne "") {
-        $pagesUrl = "$baseUrl/api/v2/spaces/$SpaceId/pages?limit=$limit&body-format=storage"
+        $statusFilter = if ($SkipArchived) { "&status=current" } else { "" }
+        $pagesUrl = "$baseUrl/api/v2/spaces/$SpaceId/pages?limit=$limit&body-format=storage$statusFilter"
     } else {
-        $pagesUrl = "$baseUrl/rest/api/content?spaceKey=$SpaceKey&type=$ContentType&expand=body.storage,version&limit=$limit"
+        $statusFilter = if ($SkipArchived) { "&status=current" } else { "" }
+        $pagesUrl = "$baseUrl/rest/api/content?spaceKey=$SpaceKey&type=$ContentType&expand=body.storage,version&limit=$limit$statusFilter"
     }
 
     PrintAndLog -message "Retrieving Confluence content from space '$SpaceKey'..."
@@ -221,6 +224,12 @@ function GetAllPages {
 
         if ($response.results -and $response.results.Count -gt 0) {
             foreach ($page in $response.results) {
+                $pageStatus = if ($null -ne $page.status) { "$($page.status)".Trim().ToLowerInvariant() } else { "" }
+                if ($SkipArchived -and -not [string]::IsNullOrWhiteSpace($pageStatus) -and $pageStatus -ne "current") {
+                    PrintAndLog -message "Skipping Confluence page '$($page.title)' ($($page.id)) from space '$SpaceKey' because status is '$pageStatus'." -Color Gray
+                    continue
+                }
+
                 # v2 API returns body differently — normalize to v1 shape
                 if ($SpaceId -ne "" -and $page.body -and $page.body.storage) {
                     # already in correct shape — body.storage.value exists
@@ -989,7 +998,7 @@ function Strip-ConfluenceBloat {
 }
 
 
-function ConvertTo-MigrationBoolean {
+function Get-CoercedBoolean {
     param(
         [object]$Value,
         [bool]$Default = $false
@@ -1006,7 +1015,7 @@ function ConvertTo-MigrationBoolean {
     return $Default
 }
 
-function Get-MigrationDoubleSetting {
+function Get-CoercedDouble {
     param(
         [object]$Value,
         [double]$Default

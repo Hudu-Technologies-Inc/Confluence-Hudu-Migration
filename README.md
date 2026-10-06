@@ -51,6 +51,8 @@ If you plan on migrating articles to individual companies, you can either create
 
 Optional: set `$ExportConfluenceTables = $true` in your environment file, or set the environment variable `CONFLUENCE_EXPORT_TABLES=true`, to export detected Confluence HTML tables into grouped CSVs under the run's logs folder. `$ConfluenceTableSchemaMatchThreshold` controls fuzzy schema grouping and defaults to `0.86`.
 
+Archived Confluence pages are skipped by default with `$SkipArchivedConfluenceContent = $true`. Set it to `$false` only if you intentionally want to include non-current Confluence content.
+
 <img width="2322" height="2338" alt="image" src="https://github.com/user-attachments/assets/c97bbc43-9d17-4b96-844d-2961e09355d4" />
 
 

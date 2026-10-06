@@ -16,73 +16,21 @@
 #
 # Authors: Mason Stetler
 
-$project_workdir=$PSScriptRoot
+# init
 if ($MyInvocation.InvocationName -eq '.') {
     Write-Host "Script was dot-sourced" -ForegroundColor Green
 } else {
     Write-Host "Script was executed without dot-sourcing, this is the recommended method of running the script to ensure settings are retained in the session" -ForegroundColor Yellow; write-warning "exiting to prevent issues later on, please dot-source the script by running `. .\yourenvironmentfile.ps1` or `. .\Confluence-Migration.ps1` from powershell 7.5 or later (ideally as Administrator)" -ForegroundColor Red; exit 1;
 }
-foreach ($h in @("init","confluence","general")){. ".\helpers\$h.ps1"}
-$PowershellVersion = [version](Get-Host).Version; Write-Host "Required PowerShell version: $requiredPowershellVersion" -ForegroundColor Blue;
-if ($PowershellVersion -lt $requiredPowershellVersion) {
-    Write-Host "PowerShell $requiredPowershellVersion or higher is required. You have $PowershellVersion." -ForegroundColor Red; exit 1;
-} else {
-    Write-Host "PowerShell version $PowershellVersion found" -ForegroundColor Green
-}
+$project_workdir=$PSScriptRoot; foreach ($h in @("init","confluence","general")){. "$project_workdir\helpers\$h.ps1"};
 
+$PowershellVersion = [version](Get-Host).Version; $HuduAppInfo = Get-HuduAppInfo; $CurrentHuduVersion = [version]$HuduAppInfo.version; $articlesEnabled = Get-HuduFeatureAvailability -Core_Feature articles;
+$ExportConfluenceTables = Get-CoercedBoolean -Value ($ExportConfluenceTables ?? $env:CONFLUENCE_EXPORT_TABLES ?? $env:EXPORT_CONFLUENCE_TABLES) -Default $false; $ConfluenceTableSchemaMatchThreshold = Get-CoercedDouble -Value ($ConfluenceTableSchemaMatchThreshold ?? $env:CONFLUENCE_TABLE_SCHEMA_MATCH_THRESHOLD) -Default 0.86; $SkipArchivedConfluenceContent = Get-CoercedBoolean -Value ($SkipArchivedConfluenceContent ?? $env:CONFLUENCE_SKIP_ARCHIVED ?? $env:SKIP_ARCHIVED_CONFLUENCE_CONTENT) -Default $true;
 
-$HuduAppInfo = Get-HuduAppInfo; $CurrentVersion = [version]$HuduAppInfo.version;
-if ($CurrentVersion -lt [version]$RequiredHuduVersion) {Write-Host "This script requires at least version $RequiredHuduVersion and cannot run with version $CurrentVersion. Please update your version of Hudu."; exit 1;}
-
-$articlesEnabled = Get-HuduFeatureAvailability -Core_Feature articles
+if ($PowershellVersion -lt $requiredPowershellVersion) {Write-Host "PowerShell $requiredPowershellVersion or higher is required. You have $PowershellVersion." -ForegroundColor Red; exit 1;} 
+if ($CurrentHuduVersion -lt [version]$RequiredHuduVersion) {Write-Host "This script requires at least version $RequiredHuduVersion and cannot run with version $CurrentHuduVersion. Please update your version of Hudu."; exit 1;}
 if ($false -eq $articlesEnabled.CentralKB -and $false -eq $articlesEnabled.CompanyKB) {Write-Host "Articles feature is not enabled in Hudu. Exiting script." -ForegroundColor Red; exit 1;}
-
-$ImageMap = @{}
-$ConfluenceToHuduUrlMap = @{}
-$Article_Relinking=@{}
-$ExportConfluenceTables = ConvertTo-MigrationBoolean -Value ($ExportConfluenceTables ?? $env:CONFLUENCE_EXPORT_TABLES ?? $env:EXPORT_CONFLUENCE_TABLES) -Default $false
-$ConfluenceTableSchemaMatchThreshold = Get-MigrationDoubleSetting -Value ($ConfluenceTableSchemaMatchThreshold ?? $env:CONFLUENCE_TABLE_SCHEMA_MATCH_THRESHOLD) -Default 0.86
-
-$RunSummary=@{
-    State="Set-Up"
-    CompletedStates=@()
-    SetupInfo=@{
-        HuduDestination     = $HuduBaseUrl
-        HuduMaxContentLength= 196000
-        ConfluenceSource    = $ConfluenceBaseUrl
-        HuduVersion         = [version]$HuduAppInfo.version
-        PowershellVersion   = [version]$PowershellVersion
-        project_workdir     = $project_workdir
-        TableExportEnabled  = $ExportConfluenceTables
-        TableExportSchemaMatchThreshold = $ConfluenceTableSchemaMatchThreshold
-        StartedAt           = $(get-date)
-        FinishedAt          = $null
-        RunDuration         = $null
-        PreviewLength       = 2500
-
-    }
-    JobInfo=@{
-        MigrationSource     = [PSCustomObject]@{}
-        MigrationDest       = [PSCustomObject]@{}
-        Spaces              = [System.Collections.ArrayList]@()
-        PagesCount          = 0
-        LinksCreated        = 0
-        LinksFound          = 0
-        LinksReplaced       = 0
-        ArticlesCreated     = 0
-        ArticlesSkipped     = 0
-        ArticlesErrored     = 0
-        AttachmentsFound    = 0
-        UploadsCreated      = 0
-        UploadsErrored      = 0
-    }
-    Errors                  = [System.Collections.ArrayList]@()
-    Warnings                = [System.Collections.ArrayList]@()
-}
-$TrackedAttachments = [System.Collections.ArrayList]@()
-$AllReplacedLinks =  [System.Collections.ArrayList]@()
-$AllFoundLinks =[System.Collections.ArrayList]@()
-$AllNewLinks = [System.Collections.ArrayList]@()        
+$ImageMap = @{}; $ConfluenceToHuduUrlMap = @{}; $Article_Relinking=@{}; $RunSummary=Start-RunSummary; $TrackedAttachments = [System.Collections.ArrayList]@(); $AllReplacedLinks =  [System.Collections.ArrayList]@(); $AllFoundLinks =[System.Collections.ArrayList]@(); $AllNewLinks = [System.Collections.ArrayList]@();
 
 # Step 1.1- Get spaces and select which or all spaces to get pages from
 PrintAndLog -message  "Getting All Spaces and configuring Source options (Confluence-Side)" -Color Blue
@@ -109,12 +57,12 @@ if ([int]$RunSummary.JobInfo.MigrationSource.Identifier -eq 0) {
     $SingleChosenSpace=$(Select-ObjectFromList -Objects $AllSpaces - Message "From which single space would you like to migrate pages from?")  
     $RunSummary.JobInfo.Spaces.Add($SingleChosenSpace) | Out-Null
     $RunSummary.JobInfo.MigrationSource.OptionMessage="$($RunSummary.JobInfo.MigrationSource.OptionMessage) (space: $($SingleChosenSpace.name)/$($SingleChosenSpace.key))"
-    $SourcePages=$(GetAllPages -SpaceKey $SingleChosenSpace.key -SpaceName $SingleChosenSpace.name -SpaceId $SingleChosenSpace.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
+    $SourcePages=$(GetAllPages -SpaceKey $SingleChosenSpace.key -SpaceName $SingleChosenSpace.name -SpaceId $SingleChosenSpace.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl -SkipArchived $SkipArchivedConfluenceContent)
 } else {
     foreach ($space in $AllSpaces) {
         PrintAndLog -message "Obtaining Pages from space: $($space.name)/$($space.key)" -Color Blue
         $RunSummary.JobInfo.Spaces.Add($space) | Out-Null
-        $addedPages = $(GetAllPages -SpaceKey $space.key -SpaceName $space.name -SpaceId $space.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl)
+        $addedPages = $(GetAllPages -SpaceKey $space.key -SpaceName $space.name -SpaceId $space.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl -SkipArchived $SkipArchivedConfluenceContent)
         $SourcePages+=$addedPages
     }
 }

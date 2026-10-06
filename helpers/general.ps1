@@ -196,6 +196,24 @@ function Write-InspectObject {
 }
 
 function Select-ObjectFromList($objects, $message, $inspectObjects = $false, $allowNull = $false) {
+    $objects = @($objects)
+    $shouldSortObjects = $objects.Count -gt 1 -and -not ($objects | Where-Object { $_ -is [string] -or $_ -is [ValueType] }) -and -not ($objects | Where-Object { $null -ne $_.Identifier })
+    if ($shouldSortObjects) {
+        $objects = @($objects | Sort-Object -Property @{
+            Expression = {
+                if ($null -ne $_.OptionMessage) {
+                    "$($_.OptionMessage)"
+                } elseif (-not [string]::IsNullOrEmpty($_.attributes.name)) {
+                    "$($_.attributes.name)"
+                } elseif (-not [string]::IsNullOrEmpty($_.name)) {
+                    "$($_.name)"
+                } else {
+                    "$_"
+                }
+            }
+        })
+    }
+
     $validated = $false
     while (-not $validated) {
         if ($allowNull) { Write-Host "0: None/Custom" }
@@ -246,6 +264,45 @@ function Get-YesNoResponse($message) {
         }
     }
     while ($true)
+}
+function Start-RunSummary {
+    return @{
+    State="Set-Up"
+    CompletedStates=@()
+    SetupInfo=@{
+        HuduDestination     = $HuduBaseUrl
+        HuduMaxContentLength= 196000
+        ConfluenceSource    = $ConfluenceBaseUrl
+        HuduVersion         = [version]$HuduAppInfo.version
+        PowershellVersion   = [version]$PowershellVersion
+        project_workdir     = $project_workdir
+        TableExportEnabled  = $ExportConfluenceTables
+        TableExportSchemaMatchThreshold = $ConfluenceTableSchemaMatchThreshold
+        SkipArchivedConfluenceContent = $SkipArchivedConfluenceContent
+        StartedAt           = $(get-date)
+        FinishedAt          = $null
+        RunDuration         = $null
+        PreviewLength       = 2500
+
+    }
+    JobInfo=@{
+        MigrationSource     = [PSCustomObject]@{}
+        MigrationDest       = [PSCustomObject]@{}
+        Spaces              = [System.Collections.ArrayList]@()
+        PagesCount          = 0
+        LinksCreated        = 0
+        LinksFound          = 0
+        LinksReplaced       = 0
+        ArticlesCreated     = 0
+        ArticlesSkipped     = 0
+        ArticlesErrored     = 0
+        AttachmentsFound    = 0
+        UploadsCreated      = 0
+        UploadsErrored      = 0
+    }
+    Errors                  = [System.Collections.ArrayList]@()
+    Warnings                = [System.Collections.ArrayList]@()
+}
 }
 
 function Get-ArticlePreviewBlock {

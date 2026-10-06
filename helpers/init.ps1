@@ -48,14 +48,21 @@ while ([string]::IsNullOrWhiteSpace($ConfluenceToken)) {
 # ---------------------------------------
 # internal variables, set up folders
 # ---------------------------------------
-$TmpOutputDir=$(join-path $project_workdir "$($ConfluenceDomain)-tmp")
-$LogsDir=$(join-path $project_workdir "$($ConfluenceDomain)-logs")
-$ErroredItemsFolder=$(join-path $LogsDir "errored")
-$LogFile = $(join-path $LogsDir "ConfluenceTransfer.log")
+$userDataDir = if ([string]::IsNullOrWhiteSpace($userDataDir)) { $project_workdir } else { $userDataDir }
+$userDataDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($userDataDir)
+if (!(Test-Path -LiteralPath $userDataDir -PathType Container)) {
+    New-Item -LiteralPath $userDataDir -ItemType Directory -Force | Out-Null
+}
+$userDataDir = (Resolve-Path -LiteralPath $userDataDir).Path
+$TmpOutputDir = Join-Path -Path $userDataDir -ChildPath "$($ConfluenceDomain)-tmp"
+$LogsDir = Join-Path -Path $userDataDir -ChildPath "$($ConfluenceDomain)-logs"
+$ErroredItemsFolder = Join-Path -Path $LogsDir -ChildPath "errored"
+$LogFile = Join-Path -Path $LogsDir -ChildPath "ConfluenceTransfer.log"
 
-$TmpOutputDir = "./$($ConfluenceDomain)-tmp"
-foreach ($folder in @($TmpOutputDir,$LogsDir,$ErroredItemsFolder)) {
-    if (!(Test-Path -Path "$folder")) { New-Item "$folder" -ItemType Directory }
+foreach ($folder in @($TmpOutputDir, $LogsDir, $ErroredItemsFolder)) {
+    if (!(Test-Path -LiteralPath $folder -PathType Container)) {
+        New-Item -LiteralPath $folder -ItemType Directory -Force | Out-Null
+    }
 }
 
 
@@ -378,9 +385,9 @@ function Set-HuduModuleInitialized {
     Set-HuduInstance -HuduBaseURL $HuduBaseURL -HuduAPIKey $HuduAPIKey
  
     # Check we have the correct version
-    $CurrentVersion = [version]($(Get-HuduAppInfo).version)
+    $CurrentHuduVersion = [version]($(Get-HuduAppInfo).version)
  
-    return $CurrentVersion
+    return $CurrentHuduVersion
 }
 Set-HuduModuleInitialized -HuduBaseURL $HuduBaseURL -HuduAPIKey $HuduAPIKey
  
