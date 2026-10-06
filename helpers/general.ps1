@@ -251,6 +251,164 @@ function Select-ObjectFromList($objects, $message, $inspectObjects = $false, $al
         }
     }
 }
+
+function Get-SelectableObjectLabel {
+    param([object]$Object)
+
+    if ($null -eq $Object) { return "" }
+    if ($null -ne $Object.OptionMessage) { return "$($Object.OptionMessage)" }
+    if (-not [string]::IsNullOrEmpty($Object.attributes.name)) { return "$($Object.attributes.name)" }
+    if (-not [string]::IsNullOrEmpty($Object.name)) { return "$($Object.name)" }
+    if (-not [string]::IsNullOrEmpty($Object.Name)) { return "$($Object.Name)" }
+    if (-not [string]::IsNullOrEmpty($Object.key)) { return "$($Object.key)" }
+    if (-not [string]::IsNullOrEmpty($Object.Key)) { return "$($Object.Key)" }
+    return "$Object"
+}
+
+function Select-ConfiguredObjectFromList {
+    param(
+        [Parameter(Mandatory)][object[]]$Objects,
+        [Parameter(Mandatory)][string]$Message,
+        [bool]$NonInteractive = $false,
+        [object]$PreselectedIdentifier = $null,
+        [string[]]$IdentifierProperties = @('Identifier'),
+        [object]$DefaultIdentifier = $null,
+        [bool]$AutoSelectSingle = $true,
+        [string]$SelectionName = "selection",
+        [bool]$AllowNull = $false,
+        [bool]$InspectObjects = $false
+    )
+
+    $Objects = @($Objects | Where-Object { $null -ne $_ })
+
+    if ($Objects.Count -eq 0) {
+        if ($AllowNull) { return $null }
+        throw "No valid options are available for $SelectionName."
+    }
+
+    $hasPreselectedIdentifier = $null -ne $PreselectedIdentifier -and -not [string]::IsNullOrWhiteSpace("$PreselectedIdentifier")
+    $preselectedIdentifierIsInvalid = $false
+
+    if ($NonInteractive -and $hasPreselectedIdentifier) {
+        $wanted = "$PreselectedIdentifier".Trim()
+        $matches = @($Objects | Where-Object {
+            $object = $_
+            @($IdentifierProperties | Where-Object {
+                $property = $_
+                $null -ne $object.$property -and "$($object.$property)".Trim() -ieq $wanted
+            }).Count -gt 0
+        })
+
+        if ($matches.Count -eq 1) {
+            PrintAndLog -message "Using preselected $SelectionName`: $(Get-SelectableObjectLabel -Object $matches[0])" -Color Cyan
+            return $matches[0]
+        }
+
+        if ($matches.Count -gt 1) {
+            PrintAndLog -message "Preselected $SelectionName '$wanted' matched multiple options; falling back to interactive selection." -Color Yellow
+        } else {
+            PrintAndLog -message "Preselected $SelectionName '$wanted' is not valid for the available options; falling back to interactive selection." -Color Yellow
+        }
+        $preselectedIdentifierIsInvalid = $true
+    }
+
+    if ($NonInteractive -and -not $preselectedIdentifierIsInvalid -and $null -ne $DefaultIdentifier -and -not [string]::IsNullOrWhiteSpace("$DefaultIdentifier")) {
+        $wantedDefault = "$DefaultIdentifier".Trim()
+        $defaultMatches = @($Objects | Where-Object {
+            $object = $_
+            @($IdentifierProperties | Where-Object {
+                $property = $_
+                $null -ne $object.$property -and "$($object.$property)".Trim() -ieq $wantedDefault
+            }).Count -gt 0
+        })
+
+        if ($defaultMatches.Count -eq 1) {
+            PrintAndLog -message "Noninteractive mode selected default $SelectionName`: $(Get-SelectableObjectLabel -Object $defaultMatches[0])" -Color Cyan
+            return $defaultMatches[0]
+        }
+    }
+
+    if ($NonInteractive -and -not $preselectedIdentifierIsInvalid -and $AutoSelectSingle -and $Objects.Count -eq 1) {
+        PrintAndLog -message "Noninteractive mode selected the only available $SelectionName`: $(Get-SelectableObjectLabel -Object $Objects[0])" -Color Cyan
+        return $Objects[0]
+    }
+
+    return Select-ObjectFromList -Objects $Objects -Message $Message -inspectObjects $InspectObjects -allowNull $AllowNull
+}
+
+function Select-ConfluenceSourceStrategy {
+    param(
+        [Parameter(Mandatory)][object[]]$Strategies,
+        [bool]$NonInteractive = $false,
+        [object]$PreselectedSourceStrategy = $null
+    )
+
+    return Select-ConfiguredObjectFromList `
+        -Objects $Strategies `
+        -Message "Configure Source (Confluence-Side) Options from Confluence- Migrate pages from which Space(s)?" `
+        -NonInteractive $NonInteractive `
+        -PreselectedIdentifier $PreselectedSourceStrategy `
+        -IdentifierProperties @('Identifier') `
+        -DefaultIdentifier 1 `
+        -SelectionName "Confluence source strategy"
+}
+
+function Select-ConfluenceSpace {
+    param(
+        [Parameter(Mandatory)][object[]]$Spaces,
+        [bool]$NonInteractive = $false,
+        [object]$PreselectedSingleSpace = $null
+    )
+
+    return Select-ConfiguredObjectFromList `
+        -Objects $Spaces `
+        -Message "From which single space would you like to migrate pages from?" `
+        -NonInteractive $NonInteractive `
+        -PreselectedIdentifier $PreselectedSingleSpace `
+        -IdentifierProperties @('Key','Name','Id') `
+        -AutoSelectSingle $false `
+        -SelectionName "Confluence single space"
+}
+
+function Select-HuduDestinationStrategy {
+    param(
+        [Parameter(Mandatory)][object[]]$DestinationChoices,
+        [Parameter(Mandatory)][string]$Message,
+        [bool]$NonInteractive = $false,
+        [object]$PreselectedDestinationStrategy = $null
+    )
+
+    $preselected = $PreselectedDestinationStrategy
+    if ($NonInteractive -and $null -ne $preselected -and "$preselected".Trim() -eq "2") {
+        PrintAndLog -message "Preselected destination strategy 2 requires per-article choices and cannot run unattended; falling back to interactive destination selection." -Color Yellow
+        return Select-ObjectFromList -Objects $DestinationChoices -Message $Message -allowNull $false
+    }
+
+    return Select-ConfiguredObjectFromList `
+        -Objects $DestinationChoices `
+        -Message $Message `
+        -NonInteractive $NonInteractive `
+        -PreselectedIdentifier $preselected `
+        -IdentifierProperties @('Identifier') `
+        -SelectionName "Hudu destination strategy"
+}
+
+function Select-HuduCompany {
+    param(
+        [Parameter(Mandatory)][object[]]$Companies,
+        [Parameter(Mandatory)][string]$Message,
+        [bool]$NonInteractive = $false,
+        [object]$PreselectedCompany = $null
+    )
+
+    return Select-ConfiguredObjectFromList `
+        -Objects $Companies `
+        -Message $Message `
+        -NonInteractive $NonInteractive `
+        -PreselectedIdentifier $PreselectedCompany `
+        -IdentifierProperties @('Id','Name','Slug') `
+        -SelectionName "Hudu company"
+}
 function Get-YesNoResponse($message) {
     do {
         $response = Read-Host "$message (y/n)"
@@ -276,6 +434,7 @@ function Start-RunSummary {
         HuduVersion         = [version]$HuduAppInfo.version
         PowershellVersion   = [version]$PowershellVersion
         project_workdir     = $project_workdir
+        NonInteractive      = $NonInteractive
         TableExportEnabled  = $ExportConfluenceTables
         TableExportSchemaMatchThreshold = $ConfluenceTableSchemaMatchThreshold
         SkipArchivedConfluenceContent = $SkipArchivedConfluenceContent
@@ -325,7 +484,41 @@ Title: $Title
 Snippet: $snippet
 "@
 }
+function Write-TimedMessage {
+    Param(
+        [string]$Message,
+        [string]$DefaultResponse,
+        [int]$Timeout = 0  # Optional timeout in seconds for non-interactive mode
+    )
 
+    # Check non-interactive mode
+    if ($NonInteractive -eq $true) {
+        if ($Timeout -gt 0) {
+            $TimeoutStatement = "- Waiting for $Timeout seconds due to noninteractive mode. Control + c now if you do not wish to continue."
+        } else {
+            $TimeoutStatement = ""
+        }
+        if ($DefaultResponse -eq $null -or $DefaultResponse -eq ""){
+            $DefaultResponse="Proceeding"
+        }
+
+        if ($null -eq $DefaultResponse) {
+            Write-Host "$Message $TimeoutStatement"
+        } else {
+            Write-Host "$Message $TimeoutStatement - Noninteractive mode. Assuming response of ($DefaultResponse) after timeout."
+        }
+
+        # Apply timeout if specified
+        if ($Timeout -gt 0) {
+            Start-Sleep -Seconds $Timeout
+        }
+
+        return $DefaultResponse
+    } else {
+        # Interactive mode
+        return Read-Host -Prompt $Message
+    }
+}
 function Get-LinksFromHTML {
     param (
         [string]$htmlContent,

@@ -1,4 +1,14 @@
 # Define some useful Functions 
+$ConfluenceSourceStrategies = @(
+[PSCustomObject]@{
+    OptionMessage= "From a Single/Specific Confluence Space"
+    Identifier = 0
+}, 
+[PSCustomObject]@{
+    OptionMessage= "From All Confluence Space(s)"
+    Identifier = 1
+}
+)
 
 function Get-AttachmentsForPage {
     param (
