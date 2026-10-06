@@ -431,3 +431,61 @@ function Set-MigrationRecord {
 
     return $true
 }
+function Get-HuduEmbeddableUploadMediaKind {
+  param([Parameter(Mandatory)][string]$Path)
+  $extension = [IO.Path]::GetExtension($Path).ToLowerInvariant()
+  if ($extension -in @('.mp4', '.m4v', '.webm', '.ogv', '.mov', '.mkv')) { return 'Video' }
+  if ($extension -in @('.mp3', '.m4a', '.aac', '.wav', '.ogg', '.oga', '.opus', '.flac', '.weba')) { return 'Audio' }
+  return $null
+}
+
+function Get-NormalizedCompanyName {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return "" }
+    return ($Name.Trim() -replace '\s+', ' ').ToLowerInvariant()
+}
+
+
+
+function Resolve-HuduCompanyForConfluenceSpace {
+    param(
+        [Parameter(Mandatory)][object]$Space,
+        [object[]]$Companies = @()
+    )
+
+    $spaceName = if (-not [string]::IsNullOrWhiteSpace($Space.Name)) { $Space.Name.Trim() } else { $Space.Key.Trim() }
+    $normalizedSpaceName = Get-NormalizedCompanyName -Name $spaceName
+
+    $Companies = @($Companies | Where-Object { $null -ne $_ })
+    $matches = @($Companies | Where-Object {
+        (Get-NormalizedCompanyName -Name $_.Name) -eq $normalizedSpaceName
+    })
+
+    if ($matches.Count -eq 1) {
+        PrintAndLog -message "Matched Confluence space '$($Space.Name)' ($($Space.Key)) to existing Hudu company '$($matches[0].Name)' (ID: $($matches[0].Id))." -Color Green
+        return $matches[0]
+    }
+
+    if ($matches.Count -gt 1) {
+        PrintAndLog -message "Multiple Hudu companies match Confluence space '$($Space.Name)' ($($Space.Key)); please choose the destination company." -Color Yellow
+        return $(Select-ObjectFromList -Objects $matches -message "Which Hudu company should Confluence space '$($Space.Name)' ($($Space.Key)) migrate into?")
+    }
+
+    PrintAndLog -message "No Hudu company matched Confluence space '$($Space.Name)' ($($Space.Key)); creating company '$spaceName'." -Color Yellow
+    $createdCompanyResponse = New-HuduCompany -Name $spaceName -Notes "Created by Confluence migration from Confluence space '$($Space.Name)' (key: $($Space.Key), id: $($Space.Id))."
+    $createdCompanyResponse = $createdCompanyResponse.company ?? $createdCompanyResponse
+    $createdCompany = Get-HuduCompanies -id $createdCompanyResponse.id
+
+    if ($null -eq $createdCompany -or $null -eq $createdCompany.Id) {
+        $createdCompany = @(Get-HuduCompanies -Name $spaceName | Where-Object {
+            (Get-NormalizedCompanyName -Name $_.Name) -eq $normalizedSpaceName
+        } | Select-Object -First 1)[0]
+    }
+
+    if ($null -eq $createdCompany -or $null -eq $createdCompany.Id) {
+        throw "Unable to create or retrieve Hudu company for Confluence space '$($Space.Name)' ($($Space.Key))."
+    }
+
+    PrintAndLog -message "Created Hudu company '$($createdCompany.Name)' (ID: $($createdCompany.Id)) for Confluence space '$($Space.Name)' ($($Space.Key))." -Color Green
+    return $createdCompany
+}

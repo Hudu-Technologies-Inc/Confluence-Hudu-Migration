@@ -20,53 +20,28 @@ $project_workdir=$PSScriptRoot
 if ($MyInvocation.InvocationName -eq '.') {
     Write-Host "Script was dot-sourced" -ForegroundColor Green
 } else {
-    Write-Host "Script was executed without dot-sourcing, this is the recommended method of running the script to ensure settings are retained in the session" -ForegroundColor Yellow; write-warning "exiting to prevent issues later on, please dot-source the script by running `. .\yourenvironmentfile.ps1` or `. .\Confluence-Migration.ps1` from powershell 7.5 or later (ideally as Administrator)" -ForegroundColor Red;
-    exit 1
+    Write-Host "Script was executed without dot-sourcing, this is the recommended method of running the script to ensure settings are retained in the session" -ForegroundColor Yellow; write-warning "exiting to prevent issues later on, please dot-source the script by running `. .\yourenvironmentfile.ps1` or `. .\Confluence-Migration.ps1` from powershell 7.5 or later (ideally as Administrator)" -ForegroundColor Red; exit 1;
 }
-. ".\helpers\init.ps1"
-. ".\helpers\confluence.ps1"
-. ".\helpers\general.ps1"
-
-$PowershellVersion = [version](Get-Host).Version
-$requiredPowershellVersion = [version]"7.5.0"
-Write-Host "Required PowerShell version: $requiredPowershellVersion" -ForegroundColor Blue
-
+foreach ($h in @("init","confluence","general")){. ".\helpers\$h.ps1"}
+$PowershellVersion = [version](Get-Host).Version; Write-Host "Required PowerShell version: $requiredPowershellVersion" -ForegroundColor Blue;
 if ($PowershellVersion -lt $requiredPowershellVersion) {
-    Write-Host "PowerShell $requiredPowershellVersion or higher is required. You have $PowershellVersion." -ForegroundColor Red
-    exit 1
+    Write-Host "PowerShell $requiredPowershellVersion or higher is required. You have $PowershellVersion." -ForegroundColor Red; exit 1;
 } else {
     Write-Host "PowerShell version $PowershellVersion found" -ForegroundColor Green
 }
 
 
-$RequiredHuduVersion = "2.46.0"
-$HuduAppInfo = Get-HuduAppInfo
-$CurrentVersion = [version]$HuduAppInfo.version
-if ($CurrentVersion -lt [version]$RequiredHuduVersion) {
-    Write-Host "This script requires at least version $RequiredHuduVersion and cannot run with version $CurrentVersion. Please update your version of Hudu."
-    exit 1
-}
-
-$DisallowedVersions = @([version]("2.37.0"))
-if ($DisallowedVersions -contains [version]($CurrentVersion)) {write-host "disallowed version $($CurrentVersion); Please upgrade or downgrade if possible first." -ForegroundColor Red; exit 1;} else {write-host "$($CurrentVersion) is allowed!" -ForegroundColor Green};
+$HuduAppInfo = Get-HuduAppInfo; $CurrentVersion = [version]$HuduAppInfo.version;
+if ($CurrentVersion -lt [version]$RequiredHuduVersion) {Write-Host "This script requires at least version $RequiredHuduVersion and cannot run with version $CurrentVersion. Please update your version of Hudu."; exit 1;}
 
 $articlesEnabled = Get-HuduFeatureAvailability -Core_Feature articles
+if ($false -eq $articlesEnabled.CentralKB -and $false -eq $articlesEnabled.CompanyKB) {Write-Host "Articles feature is not enabled in Hudu. Exiting script." -ForegroundColor Red; exit 1;}
 
-if ($false -eq $articlesEnabled.CentralKB -and $false -eq $articlesEnabled.CompanyKB) {
-    Write-Host "Articles feature is not enabled in Hudu. Exiting script." -ForegroundColor Red
-    exit 1
-}
 $ImageMap = @{}
 $ConfluenceToHuduUrlMap = @{}
 $Article_Relinking=@{}
-
-function Get-HuduEmbeddableUploadMediaKind {
-  param([Parameter(Mandatory)][string]$Path)
-  $extension = [IO.Path]::GetExtension($Path).ToLowerInvariant()
-  if ($extension -in @('.mp4', '.m4v', '.webm', '.ogv', '.mov', '.mkv')) { return 'Video' }
-  if ($extension -in @('.mp3', '.m4a', '.aac', '.wav', '.ogg', '.oga', '.opus', '.flac', '.weba')) { return 'Audio' }
-  return $null
-}
+$ExportConfluenceTables = ConvertTo-MigrationBoolean -Value ($ExportConfluenceTables ?? $env:CONFLUENCE_EXPORT_TABLES ?? $env:EXPORT_CONFLUENCE_TABLES) -Default $false
+$ConfluenceTableSchemaMatchThreshold = Get-MigrationDoubleSetting -Value ($ConfluenceTableSchemaMatchThreshold ?? $env:CONFLUENCE_TABLE_SCHEMA_MATCH_THRESHOLD) -Default 0.86
 
 $RunSummary=@{
     State="Set-Up"
@@ -78,6 +53,8 @@ $RunSummary=@{
         HuduVersion         = [version]$HuduAppInfo.version
         PowershellVersion   = [version]$PowershellVersion
         project_workdir     = $project_workdir
+        TableExportEnabled  = $ExportConfluenceTables
+        TableExportSchemaMatchThreshold = $ConfluenceTableSchemaMatchThreshold
         StartedAt           = $(get-date)
         FinishedAt          = $null
         RunDuration         = $null
@@ -201,10 +178,10 @@ if ($(Select-ObjectFromList -objects @("yes","no") -message "does this look like
 
 # Step 2: Present Options for Hudu / Destination
 PrintAndLog -message  "Getting All Companies and configuring destination options (Hudu-Side)" -Color Blue
-$all_companies = Get-HuduCompanies
+$all_companies = @(Get-HuduCompanies | Where-Object { $null -ne $_ })
 $hasCentralKb = $true -eq $articlesEnabled.CentralKB
 $hasCompanyKb = $true -eq $articlesEnabled.CompanyKB
-$hasCompanies = @($all_companies).Count -gt 0
+$hasCompanies = $all_companies.Count -gt 0
 
 if (-not $hasCentralKb -and -not $hasCompanyKb) {
     Write-Warning "Articles are not enabled for Central KB or Company KB in Hudu. Enable at least one article destination before proceeding."
@@ -212,7 +189,11 @@ if (-not $hasCentralKb -and -not $hasCompanyKb) {
 }
 
 if (-not $hasCompanies) {
-    PrintAndLog -message  "Sorry, we didnt seem to see any Companies set up in Hudu... If you intend to attribute certain articles to certain companies, be sure to add your companies first!" -Color Yellow
+    if ($hasCompanyKb) {
+        PrintAndLog -message  "Sorry, we didnt seem to see any Companies set up in Hudu... Existing-company destination options will be limited, but the per-space option can create missing companies automatically." -Color Yellow
+    } else {
+        PrintAndLog -message  "Sorry, we didnt seem to see any Companies set up in Hudu... If you intend to attribute certain articles to certain companies, enable Company KB and add or create companies first." -Color Yellow
+    }
 }
 
 $destinationChoices = @()
@@ -247,15 +228,21 @@ if ($hasCompanyKb) {
             Identifier    = 2
         }
     }
+
+    $destinationChoices += [PSCustomObject]@{
+        OptionMessage = "To One Company Per Confluence Space in Hudu - Match by Space Name, Create Missing Companies"
+        Identifier    = 3
+    }
 } else {
     write-host "Company KB core feature is not enabled in Hudu, not allowing it as option."
 }
 
 if ($destinationChoices.Count -eq 0) {
-    Write-Warning "No valid Hudu article destination is available. Company KB is enabled but there are no companies, and Central KB is not enabled."
+    Write-Warning "No valid Hudu article destination is available. Company KB and Central KB are not available for this migration."
     exit 1
 }
 $Attribution_Options=[System.Collections.ArrayList]@()
+$SpaceCompanyMap = @{}
 $RunSummary.JobInfo.MigrationDest=$(Select-ObjectFromList -Objects $destinationChoices -message "Configure Destination (Hudu-Side) Options- $($RunSummary.JobInfo.MigrationSource.OptionMessage) to where in Hudu?" -allowNull $false)
 
 if ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 0) {
@@ -274,6 +261,25 @@ if ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 0) {
         OptionMessage        = "No Company Attribution (Upload As Global/Central KnowledgeBase Article)"
         IsGlobalKB           = $true
     }    
+} elseif ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 3) {
+    foreach ($space in $RunSummary.JobInfo.Spaces) {
+        $spaceCompany = Resolve-HuduCompanyForConfluenceSpace -Space $space -Companies @($all_companies)
+        $SpaceCompanyMap[[string]$space.Key] = [PSCustomObject]@{
+            SpaceId              = $space.Id
+            SpaceKey             = $space.Key
+            SpaceName            = $space.Name
+            CompanyId            = $spaceCompany.Id
+            CompanyName          = $spaceCompany.Name
+            OptionMessage        = "Space: $($space.Name) ($($space.Key)) -> Company Name: $($spaceCompany.Name), Company ID: $($spaceCompany.Id)"
+            IsGlobalKB           = $false
+        }
+        if (@($all_companies | Where-Object { $_.Id -eq $spaceCompany.Id }).Count -eq 0) {
+            $all_companies = @($all_companies | Where-Object { $null -ne $_ }) + @($spaceCompany)
+        }
+    }
+
+    $RunSummary.JobInfo['SpaceCompanyMap'] = @($SpaceCompanyMap.Values)
+    $RunSummary.JobInfo.MigrationDest.OptionMessage="$($RunSummary.JobInfo.MigrationDest.OptionMessage) ($($SpaceCompanyMap.Count) Confluence space(s) mapped)"
 } else {
     foreach ($company in $all_companies) {
         $Attribution_Options+=[PSCustomObject]@{
@@ -333,6 +339,13 @@ foreach ($page in $SourcePages) {
         $page.CompanyId = $SingleCompanyChoice.id
     } elseif ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 1) {
         $page.CompanyId = $null  # global KB
+    } elseif ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 3) {
+        $spaceMapKey = [string]$page.SpaceKey
+        $pageDestination = $SpaceCompanyMap[$spaceMapKey]
+        if ($null -eq $pageDestination) {
+            throw "No Hudu company mapping was found for Confluence space key '$spaceMapKey' while migrating page '$($page.title)'."
+        }
+        $page.CompanyId = $pageDestination.CompanyId
     } else {
         $page.CompanyId = $(Select-ObjectFromList -message "Migrating Article: $($page.articlePreview ?? "no preview")... Which company to migrate into?" -objects $Attribution_Options).CompanyId
     }
@@ -390,6 +403,35 @@ foreach ($page in $SourcePages) {
     }
     $StubbedPages+=$page
     Write-Progress -Activity "Stubbing $($page.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
+}
+
+if ($ExportConfluenceTables) {
+    $tableExportDir = Join-Path $LogsDir "tables"
+    PrintAndLog -message "Auxiliary Confluence table export enabled. Writing grouped CSVs and schema inventory to $tableExportDir" -Color Cyan
+    try {
+        $tableExportSummary = Export-ConfluenceTables `
+            -Pages $SourcePages `
+            -OutDir $tableExportDir `
+            -SpaceCompanyMap $SpaceCompanyMap `
+            -SingleCompanyChoice $SingleCompanyChoice `
+            -AttributionOptions @($Attribution_Options) `
+            -Companies @($all_companies) `
+            -SchemaMatchThreshold $ConfluenceTableSchemaMatchThreshold
+
+        $RunSummary.JobInfo['TableExport'] = $tableExportSummary
+        PrintAndLog -message "Table export complete: $($tableExportSummary.TableCount) table(s), $($tableExportSummary.GroupCount) schema group(s), $($tableExportSummary.RowCount) row(s)." -Color Green
+    } catch {
+        $ErrorObject = @{
+            Error   = $_
+            Message = "Error exporting Confluence tables to grouped CSVs"
+            OutDir  = $tableExportDir
+        }
+        $RunSummary.Errors.Add($ErrorObject) | Out-Null
+        Write-ErrorObjectsToFile -Name "TableExport" -ErrorObject $ErrorObject
+        PrintAndLog -message "Table export failed, continuing main migration. Details were written to the error logs." -Color Yellow
+    }
+} else {
+    PrintAndLog -message "Auxiliary Confluence table export is disabled. Set CONFLUENCE_EXPORT_TABLES=true or `$ExportConfluenceTables=`$true to enable grouped CSV exports." -Color Gray
 }
 
 $RunSummary.CompletedStates += "$($RunSummary.State) finished in $($($(Get-Date) - $RunSummary.SetupInfo.StartedAt).ToString())"

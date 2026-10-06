@@ -25,6 +25,8 @@ $ConfluenceDomainBase= "https://$confluenceBase"
 $ConfluenceBaseUrl ="$ConfluenceDomainBase/wiki"
 $Confluence_Username=($Confluence_Username ?? "$(read-host 'please enter the username associated with your Confluence account / token [this should generally be your associated email address]')").Trim()
 @($ConfluenceDomain, $confluenceBase, $ConfluenceDomainBase, $ConfluenceBaseUrl) | ForEach-Object { Write-Host "Set Confluence variable: $_" -ForegroundColor Green }
+$requiredPowershellVersion = [version]"7.5.0"
+$RequiredHuduVersion = "2.46.0"
 
 # ---------------------------------------
 # quick validation
@@ -46,15 +48,17 @@ while ([string]::IsNullOrWhiteSpace($ConfluenceToken)) {
 # ---------------------------------------
 # internal variables, set up folders
 # ---------------------------------------
-$TmpOutputDir=$(join-path $project_workdir "tmp")
-$LogsDir=$(join-path $project_workdir "logs")
+$TmpOutputDir=$(join-path $project_workdir "$($ConfluenceDomain)-tmp")
+$LogsDir=$(join-path $project_workdir "$($ConfluenceDomain)-logs")
 $ErroredItemsFolder=$(join-path $LogsDir "errored")
 $LogFile = $(join-path $LogsDir "ConfluenceTransfer.log")
 
-$TmpOutputDir = "./tmp"
+$TmpOutputDir = "./$($ConfluenceDomain)-tmp"
 foreach ($folder in @($TmpOutputDir,$LogsDir,$ErroredItemsFolder)) {
     if (!(Test-Path -Path "$folder")) { New-Item "$folder" -ItemType Directory }
 }
+
+
 function Set-HuduInstance {
     param(
         [string]$HuduBaseURL,
