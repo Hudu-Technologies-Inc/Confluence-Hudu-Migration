@@ -529,7 +529,7 @@ function Resolve-HuduCompanyForConfluenceSpace {
     }
 
     PrintAndLog -message "No Hudu company matched Confluence space '$($Space.Name)' ($($Space.Key)); creating company '$spaceName'." -Color Yellow
-    $createdCompanyResponse = New-HuduCompany -Name $spaceName -Notes "Created by Confluence migration from Confluence space '$($Space.Name)' (key: $($Space.Key), id: $($Space.Id))."
+    $createdCompanyResponse = New-HuduCompany -Name $spaceName -nickname "$($space.key)" -Notes "Created by Confluence migration from Confluence space '$($Space.Name)' (key: $($Space.Key), id: $($Space.Id))."
     $createdCompanyResponse = $createdCompanyResponse.company ?? $createdCompanyResponse
     $createdCompany = Get-HuduCompanies -id $createdCompanyResponse.id
 

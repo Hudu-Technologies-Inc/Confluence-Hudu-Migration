@@ -51,7 +51,10 @@ while ([string]::IsNullOrWhiteSpace($ConfluenceToken)) {
 $userDataDir = if ([string]::IsNullOrWhiteSpace($userDataDir)) { $project_workdir } else { $userDataDir }
 $userDataDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($userDataDir)
 if (!(Test-Path -LiteralPath $userDataDir -PathType Container)) {
-    New-Item -LiteralPath $userDataDir -ItemType Directory -Force | Out-Null
+    New-Item -Path $userDataDir -ItemType Directory -Force | Out-Null
+}
+if (!(Test-Path -LiteralPath $userDataDir -PathType Container)) {
+    throw "Unable to create or access user data directory: $userDataDir"
 }
 $userDataDir = (Resolve-Path -LiteralPath $userDataDir).Path
 $TmpOutputDir = Join-Path -Path $userDataDir -ChildPath "$($ConfluenceDomain)-tmp"
@@ -61,7 +64,7 @@ $LogFile = Join-Path -Path $LogsDir -ChildPath "ConfluenceTransfer.log"
 
 foreach ($folder in @($TmpOutputDir, $LogsDir, $ErroredItemsFolder)) {
     if (!(Test-Path -LiteralPath $folder -PathType Container)) {
-        New-Item -LiteralPath $folder -ItemType Directory -Force | Out-Null
+        New-Item -Path $folder -ItemType Directory -Force | Out-Null
     }
 }
 
