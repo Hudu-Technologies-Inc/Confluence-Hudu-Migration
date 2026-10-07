@@ -22,73 +22,17 @@ if ($MyInvocation.InvocationName -eq '.') {
 } else {
     Write-Host "Script was executed without dot-sourcing, this is the recommended method of running the script to ensure settings are retained in the session" -ForegroundColor Yellow; write-warning "exiting to prevent issues later on, please dot-source the script by running `. .\yourenvironmentfile.ps1` or `. .\Confluence-Migration.ps1` from powershell 7.5 or later (ideally as Administrator)" -ForegroundColor Red; exit 1;
 }
-$project_workdir=$PSScriptRoot; foreach ($h in @("init","confluence","general")){. "$project_workdir\helpers\$h.ps1"};
 
+# instantiate vars
+$project_workdir=$PSScriptRoot; foreach ($h in @("init","confluence","general")){. "$project_workdir\helpers\$h.ps1"};
 $PowershellVersion = [version](Get-Host).Version; $HuduAppInfo = Get-HuduAppInfo; $CurrentHuduVersion = [version]$HuduAppInfo.version; $articlesEnabled = Get-HuduFeatureAvailability -Core_Feature articles;
 $NonInteractive = Get-CoercedBoolean -Value ($noninteractive ?? $env:CONFLUENCE_NONINTERACTIVE ?? $env:NONINTERACTIVE) -Default $false; $ExportConfluenceTables = Get-CoercedBoolean -Value ($ExportConfluenceTables ?? $env:CONFLUENCE_EXPORT_TABLES ?? $env:EXPORT_CONFLUENCE_TABLES) -Default $false; $ConfluenceTableSchemaMatchThreshold = Get-CoercedDouble -Value ($ConfluenceTableSchemaMatchThreshold ?? $env:CONFLUENCE_TABLE_SCHEMA_MATCH_THRESHOLD) -Default 0.86; $SkipArchivedConfluenceContent = Get-CoercedBoolean -Value ($SkipArchivedConfluenceContent ?? $env:CONFLUENCE_SKIP_ARCHIVED ?? $env:SKIP_ARCHIVED_CONFLUENCE_CONTENT) -Default $true; $TrackAttachmentDetails = Get-CoercedBoolean -Value ($TrackAttachmentDetails ?? $env:CONFLUENCE_TRACK_ATTACHMENT_DETAILS) -Default $false;
 
 if ($PowershellVersion -lt $requiredPowershellVersion) {Write-Host "PowerShell $requiredPowershellVersion or higher is required. You have $PowershellVersion." -ForegroundColor Red; exit 1;} 
 if ($CurrentHuduVersion -lt [version]$RequiredHuduVersion) {Write-Host "This script requires at least version $RequiredHuduVersion and cannot run with version $CurrentHuduVersion. Please update your version of Hudu."; exit 1;}
 if ($false -eq $articlesEnabled.CentralKB -and $false -eq $articlesEnabled.CompanyKB) {Write-Host "Articles feature is not enabled in Hudu. Exiting script." -ForegroundColor Red; exit 1;}
-$ImageMap = @{}; $ConfluenceToHuduUrlMap = @{}; $Article_Relinking=@{}; $RunSummary=Start-RunSummary; $TrackedAttachments = if ($TrackAttachmentDetails) { [System.Collections.ArrayList]@() } else { $null }; $LinksCreatedCount = 0; $LinksFoundCount = 0; $LinksReplacedCount = 0; $SourcePages = [System.Collections.ArrayList]@();
-
-function Initialize-ConfluenceSourcePage {
-    param([Parameter(Mandatory)][object]$Page)
-
-    $Page | Add-Member -NotePropertyName FetchedBy      -NotePropertyValue $localhost_name -Force
-    $Page | Add-Member -NotePropertyName OriginalTitle  -NotePropertyValue $Page.title -Force
-    $Page | Add-Member -NotePropertyName title          -NotePropertyValue $(Get-SafeTitle -name $Page.title) -Force
-
-    $rawHtml = Get-MigrationPageHtmlContent -Page $Page -Path $null
-    $rawHtmlPath = Save-MigrationHtmlContent -PageId $Page.id -Title $Page.title -Content $rawHtml -Suffix "before" -OutDir $TmpOutputDir
-    $Page | Add-Member -NotePropertyName RawHtmlPath      -NotePropertyValue $rawHtmlPath -Force
-    $Page | Add-Member -NotePropertyName PreparedHtmlPath -NotePropertyValue $null -Force
-    $Page | Add-Member -NotePropertyName FinalHtmlPath    -NotePropertyValue $null -Force
-    $Page | Add-Member -NotePropertyName htmlContent      -NotePropertyValue $null -Force
-    $Page | Add-Member -NotePropertyName rawContent       -NotePropertyValue $null -Force
-    $Page | Add-Member -NotePropertyName articlePreview   -NotePropertyValue $(Get-ArticlePreviewBlock -Title $Page.title -PageId $Page.id -Content $rawHtml -MaxLength $RunSummary.SetupInfo.PreviewLength) -Force
-
-    $extractedLinks = @(Get-LinksFromHTML -htmlContent $rawHtml -title $Page.title -includeImages $false)
-    $Page | Add-Member -NotePropertyName Links      -NotePropertyValue $null -Force
-    $Page | Add-Member -NotePropertyName LinksCount -NotePropertyValue $extractedLinks.Count -Force
-    $Page | Add-Member -NotePropertyName BaseLinks  -NotePropertyValue $(Get-ConfluenceLinks -page $Page) -Force
-    $script:LinksFoundCount += @($Page.BaseLinks).Count + $extractedLinks.Count
-
-    $Page | Add-Member -NotePropertyName stub          -NotePropertyValue $null -Force
-    $Page | Add-Member -NotePropertyName updatedHtml   -NotePropertyValue $null -Force
-    $Page | Add-Member -NotePropertyName CompanyId     -NotePropertyValue $null -Force
-    $Page | Add-Member -NotePropertyName ReplacedLinks -NotePropertyValue $null -Force
-    $Page | Add-Member -NotePropertyName ReplacedLinksCount -NotePropertyValue 0 -Force
-    $Page | Add-Member -NotePropertyName HuduArticle   -NotePropertyValue $null -Force
-    $Page | Add-Member -NotePropertyName CharsTrimmed  -NotePropertyValue 0 -Force
-
-    $attachments = Get-AttachmentsForPage -baseUrl $ConfluenceBaseUrl -pageId $Page.id -authHeader "Basic $encodedCreds"
-    $Page | Add-Member -NotePropertyName attachments -NotePropertyValue $attachments -Force
-
-    write-host "page: $Page from space $($Page.SpaceKey ?? $Page.space.key)"
-    $attachidx=0
-    foreach ($attachment in $Page.attachments) {
-        $attachidx=$attachidx+1
-        $RunSummary.JobInfo.AttachmentsFound+=1
-        write-host "    attachment $attachidx- $attachment"
-    }
-
-    Clear-MigrationPageHtmlMemory -Page $Page
-    $rawHtml = $null
-    $extractedLinks = $null
-    return $Page
-}
-
-function Add-ConfluenceSourcePages {
-    param([object[]]$Pages)
-
-    foreach ($page in @($Pages)) {
-        $initializedPage = Initialize-ConfluenceSourcePage -Page $page
-        [void]$script:SourcePages.Add($initializedPage)
-    }
-
-    Invoke-MigrationMemoryCleanup
-}
+$ImageMap = @{}; $ConfluenceToHuduUrlMap = @{}; $Article_Relinking=@{}; $RunSummary=Start-RunSummary; $TrackedAttachments = if ($TrackAttachmentDetails) { [System.Collections.ArrayList]@() } else { $null }; $LinksCreatedCount = 0; $LinksFoundCount = 0; $LinksReplacedCount = 0; $SourcePages = [System.Collections.ArrayList]@(); $destinationChoices = @();
+$Attribution_Options=[System.Collections.ArrayList]@(); $SpaceCompanyMap = @{};
 
 # Step 1.1- Get spaces and select which or all spaces to get pages from
 PrintAndLog -message  "Getting All Spaces and configuring Source options (Confluence-Side)" -Color Blue
@@ -96,13 +40,12 @@ $AllSpaces=GetAllSpaces -baseUrl $ConfluenceBaseUrl -authHeader "Basic $encodedC
 if ($AllSpaces.Count -eq 0) {
     PrintAndLog -message  "Sorry, we didnt seem to see any Confluence Spaces! Double-check your credentials and try again." -Color Red
     exit 1
-}
+} else {try {Set-MigrationRecord} catch {}}
 $allSpacesSourceStrategy = @($ConfluenceSourceStrategies | Where-Object { $_.Identifier -eq 1 } | Select-Object -First 1)[0]
-if ($null -ne $allSpacesSourceStrategy) {
-    $allSpacesSourceStrategy.OptionMessage = "From All ($($AllSpaces.count)) Confluence Space(s)"
-}
+if ($null -ne $allSpacesSourceStrategy) {$allSpacesSourceStrategy.OptionMessage = "From All ($($AllSpaces.count)) Confluence Space(s)"}
+$multipleSpacesSourceStrategy = @($ConfluenceSourceStrategies | Where-Object { $_.Identifier -eq 2 } | Select-Object -First 1)[0]
+if ($null -ne $multipleSpacesSourceStrategy) {$multipleSpacesSourceStrategy.OptionMessage = "From Multiple Selected Confluence Space(s) (choose from $($AllSpaces.count))"}
 
-try {$migrationRecord = Set-MigrationRecord} catch {}
 $RunSummary.JobInfo.MigrationSource = Select-ConfluenceSourceStrategy -Strategies $ConfluenceSourceStrategies -NonInteractive $NonInteractive -PreselectedSourceStrategy $preselectedSourceStrategy
 
 # Step 1- Obtain and record pages/attachments for space(s)
@@ -111,6 +54,16 @@ if ([int]$RunSummary.JobInfo.MigrationSource.Identifier -eq 0) {
     $RunSummary.JobInfo.Spaces.Add($SingleChosenSpace) | Out-Null
     $RunSummary.JobInfo.MigrationSource.OptionMessage="$($RunSummary.JobInfo.MigrationSource.OptionMessage) (space: $($SingleChosenSpace.name)/$($SingleChosenSpace.key))"
     Add-ConfluenceSourcePages -Pages @(GetAllPages -SpaceKey $SingleChosenSpace.key -SpaceName $SingleChosenSpace.name -SpaceId $SingleChosenSpace.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl -SkipArchived $SkipArchivedConfluenceContent)
+} elseif ([int]$RunSummary.JobInfo.MigrationSource.Identifier -eq 2) {
+    $SelectedSpaces = Select-ConfluenceSpaces -Spaces $AllSpaces -NonInteractive $NonInteractive -PreselectedSpaces ($preselectedSourceSpaces ?? $env:CONFLUENCE_SOURCE_SPACES)
+    foreach ($space in $SelectedSpaces) {
+        PrintAndLog -message "Obtaining Pages from selected space: $($space.name)/$($space.key)" -Color Blue
+        $RunSummary.JobInfo.Spaces.Add($space) | Out-Null
+        $addedPages = @(GetAllPages -SpaceKey $space.key -SpaceName $space.name -SpaceId $space.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl -SkipArchived $SkipArchivedConfluenceContent)
+        Add-ConfluenceSourcePages -Pages $addedPages
+        $addedPages = $null
+    }
+    $RunSummary.JobInfo.MigrationSource.OptionMessage="$($RunSummary.JobInfo.MigrationSource.OptionMessage) (spaces: $((@($SelectedSpaces) | ForEach-Object { "$($_.name)/$($_.key)" }) -join ', '))"
 } else {
     foreach ($space in $AllSpaces) {
         PrintAndLog -message "Obtaining Pages from space: $($space.name)/$($space.key)" -Color Blue
@@ -120,7 +73,6 @@ if ([int]$RunSummary.JobInfo.MigrationSource.Identifier -eq 0) {
         $addedPages = $null
     }
 }
-
 $RunSummary.JobInfo.PagesCount = $SourcePages.count
 
 if ($RunSummary.JobInfo.PagesCount -eq 0) {
@@ -136,28 +88,13 @@ if ($NonInteractive) {
     write-error "please re-invoke to start over."; exit 1
 }
 
-
 # Step 2: Present Options for Hudu / Destination
 PrintAndLog -message  "Getting All Companies and configuring destination options (Hudu-Side)" -Color Blue
 $all_companies = @(Get-HuduCompanies | Where-Object { $null -ne $_ })
-$hasCentralKb = $true -eq $articlesEnabled.CentralKB
-$hasCompanyKb = $true -eq $articlesEnabled.CompanyKB
-$hasCompanies = $all_companies.Count -gt 0
+$hasCentralKb = $true -eq $articlesEnabled.CentralKB; $hasCompanyKb = $true -eq $articlesEnabled.CompanyKB; $hasCompanies = $all_companies.Count -gt 0;
 
-if (-not $hasCentralKb -and -not $hasCompanyKb) {
-    Write-Warning "Articles are not enabled for Central KB or Company KB in Hudu. Enable at least one article destination before proceeding."
-    exit 1
-}
-
-if (-not $hasCompanies) {
-    if ($hasCompanyKb) {
-        PrintAndLog -message  "Sorry, we didnt seem to see any Companies set up in Hudu... Existing-company destination options will be limited, but the per-space option can create missing companies automatically." -Color Yellow
-    } else {
-        PrintAndLog -message  "Sorry, we didnt seem to see any Companies set up in Hudu... If you intend to attribute certain articles to certain companies, enable Company KB and add or create companies first." -Color Yellow
-    }
-}
-
-$destinationChoices = @()
+if (-not $hasCentralKb -and -not $hasCompanyKb) {Write-Warning "Articles are not enabled for Central KB or Company KB in Hudu. Enable at least one article destination before proceeding."; exit 1;}
+if (-not $hasCompanies) {PrintAndLog -message "$(if ($hasCompanyKb) {"Sorry, we didnt seem to see any Companies set up in Hudu... Existing-company destination options will be limited, but the per-space option can create missing companies automatically."} else {"Sorry, we didnt seem to see any Companies set up in Hudu... If you intend to attribute certain articles to certain companies, enable Company KB and add or create companies first."})" -Color Yellow}
 
 if ($hasCentralKb) {
     write-host "Central KB core feature is enabled in Hudu"
@@ -167,7 +104,6 @@ if ($hasCentralKb) {
     } elseif (-not $hasCompanyKb) {
         $centralOptionMessage += " [company KB is not enabled in Hudu]"
     }
-
     $destinationChoices += [PSCustomObject]@{
         OptionMessage = $centralOptionMessage
         Identifier    = 1
@@ -183,13 +119,11 @@ if ($hasCompanyKb) {
             OptionMessage = "To a Single Specific Company in Hudu"
             Identifier    = 0
         }
-
         $destinationChoices += [PSCustomObject]@{
             OptionMessage = "To Multiple Companies in Hudu - Let Me Choose for Each article ($(@($all_companies).Count) available destination company choices)"
             Identifier    = 2
         }
     }
-
     $destinationChoices += [PSCustomObject]@{
         OptionMessage = "To One Company Per Confluence Space in Hudu - Match by Space Name, Create Missing Companies"
         Identifier    = 3
@@ -198,12 +132,8 @@ if ($hasCompanyKb) {
     write-host "Company KB core feature is not enabled in Hudu, not allowing it as option."
 }
 
-if ($destinationChoices.Count -eq 0) {
-    Write-Warning "No valid Hudu article destination is available. Company KB and Central KB are not available for this migration."
-    exit 1
-}
-$Attribution_Options=[System.Collections.ArrayList]@()
-$SpaceCompanyMap = @{}
+if ($destinationChoices.Count -eq 0) {Write-Warning "No valid Hudu article destination is available. Company KB and Central KB are not available for this migration."; exit 1;}
+
 $RunSummary.JobInfo.MigrationDest = Select-HuduDestinationStrategy `
     -DestinationChoices $destinationChoices `
     -Message "Configure Destination (Hudu-Side) Options- $($RunSummary.JobInfo.MigrationSource.OptionMessage) to where in Hudu?" `
@@ -275,7 +205,7 @@ if ([int]$RunSummary.JobInfo.MigrationDest.Identifier -eq 0) {
 }
 
 PrintAndLog -message "You've elected for this migration path: $($RunSummary.JobInfo.MigrationSource.OptionMessage) $($RunSummary.JobInfo.MigrationDest.OptionMessage)." -Color Yellow
-if ($NonInteractive) {Write-TimedMessage -Message "starting in 10 seconds. Close window to exit now if you are unsure!" -DefaultResponse "Proceeding" -Timeout 10 | Out-Null} else {Read-Host "Press enter now or CTL+C / Close window to exit now!"}
+if ($NonInteractive) {} else {Read-Host "Press enter now or CTL+C / Close window to exit now!"}
 
 # ── TITLE CACHE PRE-PASS ─────────────────────────────────────────────────────
 # Build a lookup of Confluence page ID -> title so Resolve-HuduFolder can

@@ -272,7 +272,7 @@ function Write-InspectObject {
     return $lines -join "`n"
 }
 
-function Select-ObjectFromList($objects, $message, $inspectObjects = $false, $allowNull = $false) {
+function Select-ObjectFromList($objects, $message, $inspectObjects = $false, $allowNull = $false, $nullLabel = "None/Custom") {
     $objects = @($objects)
     $shouldSortObjects = $objects.Count -gt 1 -and -not ($objects | Where-Object { $_ -is [string] -or $_ -is [ValueType] }) -and -not ($objects | Where-Object { $null -ne $_.Identifier })
     if ($shouldSortObjects) {
@@ -293,7 +293,7 @@ function Select-ObjectFromList($objects, $message, $inspectObjects = $false, $al
 
     $validated = $false
     while (-not $validated) {
-        if ($allowNull) { Write-Host "0: None/Custom" }
+        if ($allowNull) { Write-Host "0: $nullLabel" }
 
         for ($i = 0; $i -lt $objects.Count; $i++) {
             $object = $objects[$i]
@@ -325,6 +325,65 @@ function Select-ObjectFromList($objects, $message, $inspectObjects = $false, $al
             return $objects[$parsed - 1]
         } else {
             Write-Host "Invalid selection. Please enter a number from the list." -ForegroundColor Red
+        }
+    }
+}
+
+function Select-ObjectsFromList {
+    param(
+        [Parameter(Mandatory)][object[]]$Objects,
+        [Parameter(Mandatory)][string]$Message,
+        [string]$DoneLabel = "Done selecting",
+        [bool]$InspectObjects = $false,
+        [string[]]$UniqueProperties = @('Id','Key','Name')
+    )
+
+    $selected = [System.Collections.ArrayList]@()
+    $selectedKeys = @{}
+    $available = @($Objects | Where-Object { $null -ne $_ })
+
+    function Get-SelectionKey {
+        param([object]$Object)
+
+        foreach ($property in $UniqueProperties) {
+            if ($Object.PSObject.Properties[$property] -and -not [string]::IsNullOrWhiteSpace("$($Object.$property)")) {
+                return "$property`:$($Object.$property)"
+            }
+        }
+
+        return "$Object"
+    }
+
+    while ($true) {
+        $remaining = @($available | Where-Object {
+            -not $selectedKeys.ContainsKey((Get-SelectionKey -Object $_))
+        })
+
+        if ($remaining.Count -eq 0) {
+            return $selected
+        }
+
+        $prompt = if ($selected.Count -gt 0) {
+            "$Message Selected: $($selected.Count). Choose another, or 0 to finish."
+        } else {
+            "$Message Choose at least one item, or 0 when done."
+        }
+
+        $choice = Select-ObjectFromList -Objects $remaining -Message $prompt -inspectObjects $InspectObjects -allowNull $true -nullLabel $DoneLabel
+        if ($null -eq $choice) {
+            if ($selected.Count -gt 0) {
+                return $selected
+            }
+
+            Write-Host "Please select at least one item before finishing." -ForegroundColor Yellow
+            continue
+        }
+
+        $key = Get-SelectionKey -Object $choice
+        if (-not $selectedKeys.ContainsKey($key)) {
+            $selectedKeys[$key] = $true
+            [void]$selected.Add($choice)
+            Write-Host "Selected: $(Get-SelectableObjectLabel -Object $choice)" -ForegroundColor Green
         }
     }
 }
@@ -445,6 +504,65 @@ function Select-ConfluenceSpace {
         -IdentifierProperties @('Key','Name','Id') `
         -AutoSelectSingle $false `
         -SelectionName "Confluence single space"
+}
+
+function Select-ConfluenceSpaces {
+    param(
+        [Parameter(Mandatory)][object[]]$Spaces,
+        [bool]$NonInteractive = $false,
+        [object]$PreselectedSpaces = $null
+    )
+
+    $Spaces = @($Spaces | Where-Object { $null -ne $_ })
+    if ($Spaces.Count -eq 0) {
+        throw "No Confluence spaces are available for selection."
+    }
+
+    $hasPreselectedSpaces = $null -ne $PreselectedSpaces -and -not [string]::IsNullOrWhiteSpace("$PreselectedSpaces")
+    if ($NonInteractive -and $hasPreselectedSpaces) {
+        $wantedValues = @(
+            if ($PreselectedSpaces -is [array]) {
+                $PreselectedSpaces
+            } else {
+                "$PreselectedSpaces" -split '[,;]'
+            }
+        ) | ForEach-Object { "$_".Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+        $selected = [System.Collections.ArrayList]@()
+        $seen = @{}
+        foreach ($wanted in $wantedValues) {
+            $matches = @($Spaces | Where-Object {
+                "$($_.Key)" -ieq $wanted -or "$($_.Name)" -ieq $wanted -or "$($_.Id)" -ieq $wanted
+            })
+
+            if ($matches.Count -eq 0) {
+                throw "Preselected Confluence space '$wanted' did not match any available spaces."
+            }
+
+            foreach ($match in $matches) {
+                $key = if (-not [string]::IsNullOrWhiteSpace("$($match.Id)")) { "$($match.Id)" } else { "$($match.Key)" }
+                if (-not $seen.ContainsKey($key)) {
+                    $seen[$key] = $true
+                    [void]$selected.Add($match)
+                }
+            }
+        }
+
+        if ($selected.Count -gt 0) {
+            PrintAndLog -message "Using preselected Confluence spaces: $((@($selected) | ForEach-Object { Get-SelectableObjectLabel -Object $_ }) -join ', ')" -Color Cyan
+            return $selected
+        }
+    }
+
+    if ($NonInteractive) {
+        throw "Multiple Confluence source spaces require preselected spaces in noninteractive mode. Set `$preselectedSourceSpaces or CONFLUENCE_SOURCE_SPACES to a comma-separated list of space keys, names, or ids."
+    }
+
+    return Select-ObjectsFromList `
+        -Objects $Spaces `
+        -Message "Select Confluence source spaces." `
+        -DoneLabel "Done selecting spaces" `
+        -UniqueProperties @('Id','Key','Name')
 }
 
 function Select-HuduDestinationStrategy {

@@ -7,8 +7,69 @@ $ConfluenceSourceStrategies = @(
 [PSCustomObject]@{
     OptionMessage= "From All Confluence Space(s)"
     Identifier = 1
+},
+[PSCustomObject]@{
+    OptionMessage= "From Multiple Selected Confluence Space(s)"
+    Identifier = 2
 }
 )
+function Initialize-ConfluenceSourcePage {
+    param([Parameter(Mandatory)][object]$Page)
+
+    $Page | Add-Member -NotePropertyName FetchedBy      -NotePropertyValue $localhost_name -Force
+    $Page | Add-Member -NotePropertyName OriginalTitle  -NotePropertyValue $Page.title -Force
+    $Page | Add-Member -NotePropertyName title          -NotePropertyValue $(Get-SafeTitle -name $Page.title) -Force
+
+    $rawHtml = Get-MigrationPageHtmlContent -Page $Page -Path $null
+    $rawHtmlPath = Save-MigrationHtmlContent -PageId $Page.id -Title $Page.title -Content $rawHtml -Suffix "before" -OutDir $TmpOutputDir
+    $Page | Add-Member -NotePropertyName RawHtmlPath      -NotePropertyValue $rawHtmlPath -Force
+    $Page | Add-Member -NotePropertyName PreparedHtmlPath -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName FinalHtmlPath    -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName htmlContent      -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName rawContent       -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName articlePreview   -NotePropertyValue $(Get-ArticlePreviewBlock -Title $Page.title -PageId $Page.id -Content $rawHtml -MaxLength $RunSummary.SetupInfo.PreviewLength) -Force
+
+    $extractedLinks = @(Get-LinksFromHTML -htmlContent $rawHtml -title $Page.title -includeImages $false)
+    $Page | Add-Member -NotePropertyName Links      -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName LinksCount -NotePropertyValue $extractedLinks.Count -Force
+    $Page | Add-Member -NotePropertyName BaseLinks  -NotePropertyValue $(Get-ConfluenceLinks -page $Page) -Force
+    $script:LinksFoundCount += @($Page.BaseLinks).Count + $extractedLinks.Count
+
+    $Page | Add-Member -NotePropertyName stub          -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName updatedHtml   -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName CompanyId     -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName ReplacedLinks -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName ReplacedLinksCount -NotePropertyValue 0 -Force
+    $Page | Add-Member -NotePropertyName HuduArticle   -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName CharsTrimmed  -NotePropertyValue 0 -Force
+
+    $attachments = Get-AttachmentsForPage -baseUrl $ConfluenceBaseUrl -pageId $Page.id -authHeader "Basic $encodedCreds"
+    $Page | Add-Member -NotePropertyName attachments -NotePropertyValue $attachments -Force
+
+    write-host "page: $Page from space $($Page.SpaceKey ?? $Page.space.key)"
+    $attachidx=0
+    foreach ($attachment in $Page.attachments) {
+        $attachidx=$attachidx+1
+        $RunSummary.JobInfo.AttachmentsFound+=1
+        write-host "    attachment $attachidx- $attachment"
+    }
+
+    Clear-MigrationPageHtmlMemory -Page $Page
+    $rawHtml = $null
+    $extractedLinks = $null
+    return $Page
+}
+
+function Add-ConfluenceSourcePages {
+    param([object[]]$Pages)
+
+    foreach ($page in @($Pages)) {
+        $initializedPage = Initialize-ConfluenceSourcePage -Page $page
+        [void]$script:SourcePages.Add($initializedPage)
+    }
+
+    Invoke-MigrationMemoryCleanup
+}
 
 function Get-AttachmentsForPage {
     param (
@@ -179,7 +240,7 @@ function GetAllSpaces {
                 $all_spaces += [PSCustomObject]@{
                     Name          = $_.name
                     Status        = $_.status
-                    OptionMessage = $_.key
+                    OptionMessage = $_.name
                     Key           = $_.key
                     Id            = $_.id
                 }
