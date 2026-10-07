@@ -25,6 +25,8 @@ $ConfluenceDomainBase= "https://$confluenceBase"
 $ConfluenceBaseUrl ="$ConfluenceDomainBase/wiki"
 $Confluence_Username=($Confluence_Username ?? "$(read-host 'please enter the username associated with your Confluence account / token [this should generally be your associated email address]')").Trim()
 @($ConfluenceDomain, $confluenceBase, $ConfluenceDomainBase, $ConfluenceBaseUrl) | ForEach-Object { Write-Host "Set Confluence variable: $_" -ForegroundColor Green }
+$requiredPowershellVersion = [version]"7.5.0"
+$RequiredHuduVersion = "2.46.0"
 
 # ---------------------------------------
 # quick validation
@@ -46,15 +48,27 @@ while ([string]::IsNullOrWhiteSpace($ConfluenceToken)) {
 # ---------------------------------------
 # internal variables, set up folders
 # ---------------------------------------
-$TmpOutputDir=$(join-path $project_workdir "tmp")
-$LogsDir=$(join-path $project_workdir "logs")
-$ErroredItemsFolder=$(join-path $LogsDir "errored")
-$LogFile = $(join-path $LogsDir "ConfluenceTransfer.log")
-
-$TmpOutputDir = "./tmp"
-foreach ($folder in @($TmpOutputDir,$LogsDir,$ErroredItemsFolder)) {
-    if (!(Test-Path -Path "$folder")) { New-Item "$folder" -ItemType Directory }
+$userDataDir = if ([string]::IsNullOrWhiteSpace($userDataDir)) { $project_workdir } else { $userDataDir }
+$userDataDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($userDataDir)
+if (!(Test-Path -LiteralPath $userDataDir -PathType Container)) {
+    New-Item -Path $userDataDir -ItemType Directory -Force | Out-Null
 }
+if (!(Test-Path -LiteralPath $userDataDir -PathType Container)) {
+    throw "Unable to create or access user data directory: $userDataDir"
+}
+$userDataDir = (Resolve-Path -LiteralPath $userDataDir).Path
+$TmpOutputDir = Join-Path -Path $userDataDir -ChildPath "$($ConfluenceDomain)-tmp"
+$LogsDir = Join-Path -Path $userDataDir -ChildPath "$($ConfluenceDomain)-logs"
+$ErroredItemsFolder = Join-Path -Path $LogsDir -ChildPath "errored"
+$LogFile = Join-Path -Path $LogsDir -ChildPath "ConfluenceTransfer.log"
+
+foreach ($folder in @($TmpOutputDir, $LogsDir, $ErroredItemsFolder)) {
+    if (!(Test-Path -LiteralPath $folder -PathType Container)) {
+        New-Item -Path $folder -ItemType Directory -Force | Out-Null
+    }
+}
+
+
 function Set-HuduInstance {
     param(
         [string]$HuduBaseURL,
@@ -374,9 +388,9 @@ function Set-HuduModuleInitialized {
     Set-HuduInstance -HuduBaseURL $HuduBaseURL -HuduAPIKey $HuduAPIKey
  
     # Check we have the correct version
-    $CurrentVersion = [version]($(Get-HuduAppInfo).version)
+    $CurrentHuduVersion = [version]($(Get-HuduAppInfo).version)
  
-    return $CurrentVersion
+    return $CurrentHuduVersion
 }
 Set-HuduModuleInitialized -HuduBaseURL $HuduBaseURL -HuduAPIKey $HuduAPIKey
  

@@ -3,4 +3,17 @@ $ConfluenceDomain = "yoururl.atlassian.net" #'hudu-integrations' would be valid 
 $Confluence_Username = "confluence-email@tld.net"
 $HuduBaseURL = "https://yoururlhere"
 $HuduAPIKey = ""
+$SkipArchivedConfluenceContent = $true # skips Confluence pages whose API status is not current
+$userDataDir = $psscriptroot # fully qualified path to store data and logs (you can leave as-is for local dir)
+
+## advanced + noninteractive options
+$ExportConfluenceTables = $false # or set $env:CONFLUENCE_EXPORT_TABLES = "true"
+$ConfluenceTableSchemaMatchThreshold = 0.86
+
+$noninteractive = $false # set to true if you want to avoid prompts
+$preselectedSourceStrategy = $null # set to 1 if you would like all spaces, 0 for single-space
+$preselectedSingleSpace = $null # set to space-key of single-space if single-space elected and noninteractive
+$preselectedDestinationStrategy = $null # set to 1 for central KB, 0 for single company, 3 for per-space company matching
+$preselectedSingleCompany = $null # set to Hudu company ID, name, or slug if single-company destination is elected
+
 . .\Confluence-Migration.ps1

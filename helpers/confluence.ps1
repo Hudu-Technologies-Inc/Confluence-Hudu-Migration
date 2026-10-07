@@ -1,4 +1,75 @@
 # Define some useful Functions 
+$ConfluenceSourceStrategies = @(
+[PSCustomObject]@{
+    OptionMessage= "From a Single/Specific Confluence Space"
+    Identifier = 0
+}, 
+[PSCustomObject]@{
+    OptionMessage= "From All Confluence Space(s)"
+    Identifier = 1
+},
+[PSCustomObject]@{
+    OptionMessage= "From Multiple Selected Confluence Space(s)"
+    Identifier = 2
+}
+)
+function Initialize-ConfluenceSourcePage {
+    param([Parameter(Mandatory)][object]$Page)
+
+    $Page | Add-Member -NotePropertyName FetchedBy      -NotePropertyValue $localhost_name -Force
+    $Page | Add-Member -NotePropertyName OriginalTitle  -NotePropertyValue $Page.title -Force
+    $Page | Add-Member -NotePropertyName title          -NotePropertyValue $(Get-SafeTitle -name $Page.title) -Force
+
+    $rawHtml = Get-MigrationPageHtmlContent -Page $Page -Path $null
+    $rawHtmlPath = Save-MigrationHtmlContent -PageId $Page.id -Title $Page.title -Content $rawHtml -Suffix "before" -OutDir $TmpOutputDir
+    $Page | Add-Member -NotePropertyName RawHtmlPath      -NotePropertyValue $rawHtmlPath -Force
+    $Page | Add-Member -NotePropertyName PreparedHtmlPath -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName FinalHtmlPath    -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName htmlContent      -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName rawContent       -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName articlePreview   -NotePropertyValue $(Get-ArticlePreviewBlock -Title $Page.title -PageId $Page.id -Content $rawHtml -MaxLength $RunSummary.SetupInfo.PreviewLength) -Force
+
+    $extractedLinks = @(Get-LinksFromHTML -htmlContent $rawHtml -title $Page.title -includeImages $false)
+    $Page | Add-Member -NotePropertyName Links      -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName LinksCount -NotePropertyValue $extractedLinks.Count -Force
+    $Page | Add-Member -NotePropertyName BaseLinks  -NotePropertyValue $(Get-ConfluenceLinks -page $Page) -Force
+    $script:LinksFoundCount += @($Page.BaseLinks).Count + $extractedLinks.Count
+
+    $Page | Add-Member -NotePropertyName stub          -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName updatedHtml   -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName CompanyId     -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName ReplacedLinks -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName ReplacedLinksCount -NotePropertyValue 0 -Force
+    $Page | Add-Member -NotePropertyName HuduArticle   -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName CharsTrimmed  -NotePropertyValue 0 -Force
+
+    $attachments = Get-AttachmentsForPage -baseUrl $ConfluenceBaseUrl -pageId $Page.id -authHeader "Basic $encodedCreds"
+    $Page | Add-Member -NotePropertyName attachments -NotePropertyValue $attachments -Force
+
+    write-host "page: $Page from space $($Page.SpaceKey ?? $Page.space.key)"
+    $attachidx=0
+    foreach ($attachment in $Page.attachments) {
+        $attachidx=$attachidx+1
+        $RunSummary.JobInfo.AttachmentsFound+=1
+        write-host "    attachment $attachidx- $attachment"
+    }
+
+    Clear-MigrationPageHtmlMemory -Page $Page
+    $rawHtml = $null
+    $extractedLinks = $null
+    return $Page
+}
+
+function Add-ConfluenceSourcePages {
+    param([object[]]$Pages)
+
+    foreach ($page in @($Pages)) {
+        $initializedPage = Initialize-ConfluenceSourcePage -Page $page
+        [void]$script:SourcePages.Add($initializedPage)
+    }
+
+    Invoke-MigrationMemoryCleanup
+}
 
 function Get-AttachmentsForPage {
     param (
@@ -7,7 +78,7 @@ function Get-AttachmentsForPage {
         [string]$AuthHeader
     )
 
-    $AllAttachments = @()
+    $AllAttachments = [System.Collections.ArrayList]@()
     $limit = 50
     $attachmentsUrl = "$BaseUrl/api/v2/pages/$PageId/attachments?limit=$limit"
 
@@ -18,7 +89,9 @@ function Get-AttachmentsForPage {
                 Accept        = 'application/json'
             }
 
-            $AllAttachments += $attachResponse.results
+            foreach ($attachment in @($attachResponse.results)) {
+                [void]$AllAttachments.Add($attachment)
+            }
             $nextPath = $attachResponse._links.next
             $attachmentsUrl = if ($nextPath) {
                 Resolve-ConfluenceUrl -BaseUrl $BaseUrl -PathOrUrl $nextPath
@@ -42,7 +115,9 @@ function Get-AttachmentsForPage {
             Accept        = 'application/json'
         }
 
-        $AllAttachments += $attachResponse.results
+        foreach ($attachment in @($attachResponse.results)) {
+            [void]$AllAttachments.Add($attachment)
+        }
         $start += $limit
     } while ($attachResponse.size -eq $limit)
 
@@ -165,7 +240,7 @@ function GetAllSpaces {
                 $all_spaces += [PSCustomObject]@{
                     Name          = $_.name
                     Status        = $_.status
-                    OptionMessage = $_.key
+                    OptionMessage = $_.name
                     Key           = $_.key
                     Id            = $_.id
                 }
@@ -196,17 +271,20 @@ function GetAllPages {
         [string]$SpaceName,
         [string]$authHeader,
         [string]$SpaceId = "",
-        [string]$ContentType = "page"
+        [string]$ContentType = "page",
+        [bool]$SkipArchived = $true
     )
 
-    $AllPages = @()
+    $AllPages = [System.Collections.ArrayList]@()
     $limit = 25
 
     # Use v2 API if SpaceId provided, fall back to v1 if not
     if ($SpaceId -ne "") {
-        $pagesUrl = "$baseUrl/api/v2/spaces/$SpaceId/pages?limit=$limit&body-format=storage"
+        $statusFilter = if ($SkipArchived) { "&status=current" } else { "" }
+        $pagesUrl = "$baseUrl/api/v2/spaces/$SpaceId/pages?limit=$limit&body-format=storage$statusFilter"
     } else {
-        $pagesUrl = "$baseUrl/rest/api/content?spaceKey=$SpaceKey&type=$ContentType&expand=body.storage,version&limit=$limit"
+        $statusFilter = if ($SkipArchived) { "&status=current" } else { "" }
+        $pagesUrl = "$baseUrl/rest/api/content?spaceKey=$SpaceKey&type=$ContentType&expand=body.storage,version&limit=$limit$statusFilter"
     }
 
     PrintAndLog -message "Retrieving Confluence content from space '$SpaceKey'..."
@@ -221,6 +299,12 @@ function GetAllPages {
 
         if ($response.results -and $response.results.Count -gt 0) {
             foreach ($page in $response.results) {
+                $pageStatus = if ($null -ne $page.status) { "$($page.status)".Trim().ToLowerInvariant() } else { "" }
+                if ($SkipArchived -and -not [string]::IsNullOrWhiteSpace($pageStatus) -and $pageStatus -ne "current") {
+                    PrintAndLog -message "Skipping Confluence page '$($page.title)' ($($page.id)) from space '$SpaceKey' because status is '$pageStatus'." -Color Gray
+                    continue
+                }
+
                 # v2 API returns body differently — normalize to v1 shape
                 if ($SpaceId -ne "" -and $page.body -and $page.body.storage) {
                     # already in correct shape — body.storage.value exists
@@ -236,7 +320,7 @@ function GetAllPages {
                 $page | Add-Member -NotePropertyName FullUrl  -NotePropertyValue "$baseUrl$($page._links.webui)" -Force
                 $page | Add-Member -NotePropertyName SpaceKey -NotePropertyValue "$SpaceKey" -Force
                 $page | Add-Member -NotePropertyName SpaceName -NotePropertyValue "$SpaceName" -Force
-                $AllPages += $page
+                [void]$AllPages.Add($page)
             }
         }
 
@@ -986,4 +1070,613 @@ function Strip-ConfluenceBloat {
     $Html = $Html -replace "https://$ConfluenceDomain\.atlassian\.net/wikihttps://", 'https://'
 
     return $Html
+}
+
+
+function Get-CoercedBoolean {
+    param(
+        [object]$Value,
+        [bool]$Default = $false
+    )
+
+    if ($null -eq $Value) { return $Default }
+    if ($Value -is [bool]) { return $Value }
+
+    $text = "$Value".Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return $Default }
+    if ($text -match '^(1|true|yes|y|on|enabled)$') { return $true }
+    if ($text -match '^(0|false|no|n|off|disabled)$') { return $false }
+
+    return $Default
+}
+
+function Get-CoercedDouble {
+    param(
+        [object]$Value,
+        [double]$Default
+    )
+
+    if ($null -eq $Value) { return $Default }
+    $parsed = 0.0
+    if ([double]::TryParse("$Value", [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
+        return $parsed
+    }
+
+    return $Default
+}
+
+function Normalize-ConfluenceTableCellText {
+    param([object]$Text)
+
+    if ($null -eq $Text) { return "" }
+
+    $value = [System.Net.WebUtility]::HtmlDecode("$Text")
+    $value = $value -replace "$([char]0x00A0)", ' '
+    $value = $value -replace '\s+', ' '
+    return $value.Trim()
+}
+
+function Get-ConfluenceTableHeaderKey {
+    param([string]$Header)
+
+    $value = (Normalize-ConfluenceTableCellText -Text $Header).ToLowerInvariant()
+    $value = $value -replace '[^a-z0-9]+', '_'
+    $value = $value.Trim('_')
+    if ([string]::IsNullOrWhiteSpace($value)) { return "column" }
+    return $value
+}
+
+function Get-UniqueConfluenceTableHeaders {
+    param(
+        [string[]]$Headers,
+        [string[]]$ReservedHeaders = @()
+    )
+
+    $seen = @{}
+    $reserved = @{}
+    foreach ($reservedHeader in $ReservedHeaders) {
+        $reserved[$reservedHeader.ToLowerInvariant()] = $true
+    }
+
+    $uniqueHeaders = @()
+    for ($i = 0; $i -lt $Headers.Count; $i++) {
+        $header = Normalize-ConfluenceTableCellText -Text $Headers[$i]
+        if ([string]::IsNullOrWhiteSpace($header)) {
+            $header = "Column$($i + 1)"
+        }
+
+        $header = $header -replace '[\r\n]+', ' '
+        $header = $header -replace '[\\/:*?"<>|]', '_'
+        $baseHeader = $header
+
+        if ($reserved.ContainsKey($baseHeader.ToLowerInvariant())) {
+            $baseHeader = "Table_$baseHeader"
+        }
+
+        $candidate = $baseHeader
+        $suffix = 2
+        while ($seen.ContainsKey($candidate.ToLowerInvariant()) -or $reserved.ContainsKey($candidate.ToLowerInvariant())) {
+            $candidate = "$baseHeader`_$suffix"
+            $suffix++
+        }
+
+        $seen[$candidate.ToLowerInvariant()] = $true
+        $uniqueHeaders += $candidate
+    }
+
+    return $uniqueHeaders
+}
+
+function ConvertTo-ConfluenceXmlDocument {
+    param([string]$Html)
+
+    if ([string]::IsNullOrWhiteSpace($Html)) { return $null }
+
+    $safeHtml = $Html
+    $entityMap = @{
+        '&nbsp;'  = '&#160;'
+        '&ndash;' = '-'
+        '&mdash;' = '-'
+        '&hellip;' = '...'
+        '&copy;'  = '(c)'
+        '&reg;'   = '(r)'
+        '&trade;' = '(tm)'
+        '&lsquo;' = "'"
+        '&rsquo;' = "'"
+        '&ldquo;' = '"'
+        '&rdquo;' = '"'
+    }
+
+    foreach ($entity in $entityMap.Keys) {
+        $safeHtml = $safeHtml.Replace($entity, $entityMap[$entity])
+    }
+
+    $safeHtml = [regex]::Replace($safeHtml, '&(?!amp;|lt;|gt;|quot;|apos;|#[0-9]+;|#x[0-9a-fA-F]+;)', '&amp;')
+    $safeHtml = [regex]::Replace($safeHtml, '[\x00-\x08\x0B\x0C\x0E-\x1F]', '')
+
+    $wrapped = "<root xmlns:ac=`"http://atlassian.com/content`" xmlns:ri=`"http://atlassian.com/resource/identifier`">$safeHtml</root>"
+
+    try {
+        $settings = [System.Xml.XmlReaderSettings]::new()
+        $settings.DtdProcessing = [System.Xml.DtdProcessing]::Ignore
+        $settings.XmlResolver = $null
+        $settings.CheckCharacters = $false
+
+        $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($wrapped), $settings)
+        $doc = [System.Xml.XmlDocument]::new()
+        $doc.PreserveWhitespace = $false
+        $doc.Load($reader)
+        return $doc
+    } catch {
+        return $null
+    }
+}
+
+function Test-ConfluenceNodeBelongsToTable {
+    param(
+        [System.Xml.XmlNode]$Node,
+        [System.Xml.XmlNode]$TableNode
+    )
+
+    $ancestor = $Node.ParentNode
+    while ($null -ne $ancestor) {
+        if ($ancestor.LocalName -eq 'table') {
+            return [object]::ReferenceEquals($ancestor, $TableNode)
+        }
+        $ancestor = $ancestor.ParentNode
+    }
+
+    return $false
+}
+
+function Get-ConfluenceTableAttributeInt {
+    param(
+        [System.Xml.XmlElement]$Node,
+        [string]$Name,
+        [int]$Default = 1
+    )
+
+    $value = $Node.GetAttribute($Name)
+    $parsed = 0
+    if ([int]::TryParse($value, [ref]$parsed) -and $parsed -gt 0) {
+        return $parsed
+    }
+
+    return $Default
+}
+
+function Convert-ConfluenceHtmlTableToModel {
+    param(
+        [Parameter(Mandatory)][System.Xml.XmlElement]$TableNode,
+        [int]$TableIndex = 1
+    )
+
+    $rowNodes = @($TableNode.SelectNodes(".//*[local-name()='tr']") | Where-Object {
+        Test-ConfluenceNodeBelongsToTable -Node $_ -TableNode $TableNode
+    })
+
+    if ($rowNodes.Count -eq 0) { return $null }
+
+    $rowSpans = @{}
+    $rows = [System.Collections.ArrayList]@()
+
+    foreach ($rowNode in $rowNodes) {
+        $rowCells = @{}
+        $rowHasHeader = $false
+
+        foreach ($key in @($rowSpans.Keys)) {
+            $columnIndex = [int]$key
+            $rowCells[$columnIndex] = $rowSpans[$key].Text
+            $rowSpans[$key].RemainingRows--
+            if ($rowSpans[$key].RemainingRows -le 0) {
+                $rowSpans.Remove($key)
+            }
+        }
+
+        $cellNodes = @($rowNode.ChildNodes | Where-Object {
+            $_.NodeType -eq [System.Xml.XmlNodeType]::Element -and $_.LocalName -in @('th', 'td')
+        })
+
+        $columnIndex = 0
+        foreach ($cellNode in $cellNodes) {
+            if ($cellNode.LocalName -eq 'th') {
+                $rowHasHeader = $true
+            }
+
+            while ($rowCells.ContainsKey($columnIndex)) {
+                $columnIndex++
+            }
+
+            $cellText = Normalize-ConfluenceTableCellText -Text $cellNode.InnerText
+            $colSpan = Get-ConfluenceTableAttributeInt -Node $cellNode -Name 'colspan' -Default 1
+            $rowSpan = Get-ConfluenceTableAttributeInt -Node $cellNode -Name 'rowspan' -Default 1
+
+            for ($offset = 0; $offset -lt $colSpan; $offset++) {
+                $targetColumn = $columnIndex + $offset
+                $rowCells[$targetColumn] = $cellText
+
+                if ($rowSpan -gt 1) {
+                    $rowSpans[$targetColumn] = [PSCustomObject]@{
+                        Text          = $cellText
+                        RemainingRows = $rowSpan - 1
+                    }
+                }
+            }
+
+            $columnIndex += $colSpan
+        }
+
+        if ($rowCells.Count -gt 0) {
+            $maxColumn = ($rowCells.Keys | Measure-Object -Maximum).Maximum
+            $cells = for ($i = 0; $i -le $maxColumn; $i++) {
+                if ($rowCells.ContainsKey($i)) { $rowCells[$i] } else { "" }
+            }
+
+            [void]$rows.Add([PSCustomObject]@{
+                Cells     = @($cells)
+                HasHeader = $rowHasHeader
+            })
+        }
+    }
+
+    if ($rows.Count -eq 0) { return $null }
+
+    $maxColumnCount = ($rows | ForEach-Object { $_.Cells.Count } | Measure-Object -Maximum).Maximum
+    foreach ($row in $rows) {
+        while ($row.Cells.Count -lt $maxColumnCount) {
+            $row.Cells += ""
+        }
+    }
+
+    $headerRowCount = 0
+    for ($i = 0; $i -lt $rows.Count; $i++) {
+        if ($rows[$i].HasHeader) {
+            $headerRowCount++
+        } else {
+            break
+        }
+    }
+
+    if ($headerRowCount -eq 0 -and $rows.Count -gt 1) {
+        $headerRowCount = 1
+    }
+
+    $rawHeaders = @()
+    for ($column = 0; $column -lt $maxColumnCount; $column++) {
+        $parts = @()
+        for ($headerRow = 0; $headerRow -lt $headerRowCount; $headerRow++) {
+            $part = Normalize-ConfluenceTableCellText -Text $rows[$headerRow].Cells[$column]
+            if (-not [string]::IsNullOrWhiteSpace($part) -and $parts -notcontains $part) {
+                $parts += $part
+            }
+        }
+
+        if ($parts.Count -eq 0) {
+            $rawHeaders += "Column$($column + 1)"
+        } else {
+            $rawHeaders += ($parts -join ' - ')
+        }
+    }
+
+    $dataRows = [System.Collections.ArrayList]@()
+    for ($rowIndex = $headerRowCount; $rowIndex -lt $rows.Count; $rowIndex++) {
+        [void]$dataRows.Add($rows[$rowIndex].Cells)
+    }
+
+    $metadataHeaders = @('CompanyId','CompanyName','SpaceKey','SpaceName','PageId','PageTitle','PageUrl','TableIndex','RowIndex')
+    $headers = Get-UniqueConfluenceTableHeaders -Headers $rawHeaders -ReservedHeaders $metadataHeaders
+    $headerKeys = @($headers | ForEach-Object { Get-ConfluenceTableHeaderKey -Header $_ })
+
+    return [PSCustomObject]@{
+        TableIndex     = $TableIndex
+        Headers        = @($headers)
+        HeaderKeys     = @($headerKeys)
+        HeaderRowCount = $headerRowCount
+        DataRows       = $dataRows
+        ColumnCount    = $maxColumnCount
+        RowCount       = $rows.Count
+    }
+}
+
+function Measure-ConfluenceTableHeaderSimilarity {
+    param(
+        [string[]]$Left,
+        [string[]]$Right
+    )
+
+    if ($Left.Count -eq 0 -or $Right.Count -eq 0) { return 0.0 }
+    if ($Left.Count -ne $Right.Count) { return 0.0 }
+
+    $positionMatches = 0
+    for ($i = 0; $i -lt $Left.Count; $i++) {
+        if ($Left[$i] -eq $Right[$i]) {
+            $positionMatches++
+        }
+    }
+    $positionScore = $positionMatches / $Left.Count
+
+    $leftTokens = @($Left | ForEach-Object { $_ -split '_' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $rightTokens = @($Right | ForEach-Object { $_ -split '_' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $union = @($leftTokens + $rightTokens | Sort-Object -Unique)
+    if ($union.Count -eq 0) { return $positionScore }
+
+    $intersection = @($leftTokens | Where-Object { $rightTokens -contains $_ })
+    $tokenScore = $intersection.Count / $union.Count
+
+    return [Math]::Round((0.7 * $positionScore) + (0.3 * $tokenScore), 4)
+}
+
+function Get-ConfluenceTableGroup {
+    param(
+        [System.Collections.ArrayList]$Groups,
+        [string[]]$HeaderKeys,
+        [double]$Threshold
+    )
+
+    $bestGroup = $null
+    $bestScore = 0.0
+    foreach ($group in $Groups) {
+        $score = Measure-ConfluenceTableHeaderSimilarity -Left $group.HeaderKeys -Right $HeaderKeys
+        if ($score -gt $bestScore) {
+            $bestScore = $score
+            $bestGroup = $group
+        }
+    }
+
+    if ($null -ne $bestGroup -and $bestScore -ge $Threshold) {
+        return [PSCustomObject]@{
+            Group = $bestGroup
+            Score = $bestScore
+        }
+    }
+
+    return $null
+}
+
+function Get-ConfluenceTablePageAttribution {
+    param(
+        [Parameter(Mandatory)][object]$Page,
+        [hashtable]$SpaceCompanyMap = @{},
+        [object]$SingleCompanyChoice,
+        [object[]]$AttributionOptions = @(),
+        [object[]]$Companies = @()
+    )
+
+    $companyId = $Page.CompanyId
+    if ($null -eq $companyId -or $companyId -lt 1) {
+        $companyName = if ($companyId -eq -1) { "Skipped" } else { "Global KB" }
+        return [PSCustomObject]@{
+            CompanyId   = $companyId
+            CompanyName = $companyName
+        }
+    }
+
+    $spaceMapKey = [string]$Page.SpaceKey
+    if ($SpaceCompanyMap.ContainsKey($spaceMapKey)) {
+        return [PSCustomObject]@{
+            CompanyId   = $SpaceCompanyMap[$spaceMapKey].CompanyId
+            CompanyName = $SpaceCompanyMap[$spaceMapKey].CompanyName
+        }
+    }
+
+    if ($null -ne $SingleCompanyChoice -and $SingleCompanyChoice.Id -eq $companyId) {
+        return [PSCustomObject]@{
+            CompanyId   = $SingleCompanyChoice.Id
+            CompanyName = $SingleCompanyChoice.Name
+        }
+    }
+
+    $match = @($AttributionOptions | Where-Object { $_.CompanyId -eq $companyId } | Select-Object -First 1)[0]
+    if ($null -eq $match) {
+        $match = @($Companies | Where-Object { $_.Id -eq $companyId } | Select-Object -First 1)[0]
+    }
+
+    return [PSCustomObject]@{
+        CompanyId   = $companyId
+        CompanyName = $match.CompanyName ?? $match.Name ?? "Company ID $companyId"
+    }
+}
+
+function Write-CsvHeaderOnly {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string[]]$Headers
+    )
+
+    $line = ($Headers | ForEach-Object { '"' + ($_ -replace '"', '""') + '"' }) -join ','
+    Set-Content -Path $Path -Value $line -Encoding UTF8
+}
+
+function Export-ConfluenceTables {
+    param(
+        [Parameter(Mandatory)][object[]]$Pages,
+        [Parameter(Mandatory)][string]$OutDir,
+        [hashtable]$SpaceCompanyMap = @{},
+        [object]$SingleCompanyChoice,
+        [object[]]$AttributionOptions = @(),
+        [object[]]$Companies = @(),
+        [double]$SchemaMatchThreshold = 0.86
+    )
+
+    New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
+
+    $groups = [System.Collections.ArrayList]@()
+    $inventory = [System.Collections.ArrayList]@()
+    $parseWarnings = [System.Collections.ArrayList]@()
+    $metadataHeaders = @('CompanyId','CompanyName','SpaceKey','SpaceName','PageId','PageTitle','PageUrl','TableIndex','RowIndex')
+
+    foreach ($page in $Pages) {
+        $html = Get-MigrationPageHtmlContent -Page $page -Path $page.RawHtmlPath -Default $null
+        if ([string]::IsNullOrWhiteSpace($html) -or $html -notmatch '<table\b') {
+            continue
+        }
+
+        $doc = ConvertTo-ConfluenceXmlDocument -Html $html
+        if ($null -eq $doc) {
+            [void]$parseWarnings.Add([PSCustomObject]@{
+                PageId    = $page.id
+                PageTitle = $page.title
+                Problem   = "Could not parse page storage HTML as XML; no tables exported from this page."
+            })
+            continue
+        }
+
+        $tableNodes = @($doc.SelectNodes("//*[local-name()='table']"))
+        if ($tableNodes.Count -eq 0) { continue }
+
+        $pageAttribution = Get-ConfluenceTablePageAttribution `
+            -Page $page `
+            -SpaceCompanyMap $SpaceCompanyMap `
+            -SingleCompanyChoice $SingleCompanyChoice `
+            -AttributionOptions $AttributionOptions `
+            -Companies $Companies
+
+        $tableIndex = 0
+        foreach ($tableNode in $tableNodes) {
+            $tableIndex++
+            $model = Convert-ConfluenceHtmlTableToModel -TableNode $tableNode -TableIndex $tableIndex
+            if ($null -eq $model -or $model.ColumnCount -eq 0) {
+                continue
+            }
+
+            $groupMatch = Get-ConfluenceTableGroup -Groups $groups -HeaderKeys $model.HeaderKeys -Threshold $SchemaMatchThreshold
+            if ($null -eq $groupMatch) {
+                $group = [PSCustomObject]@{
+                    Id          = $groups.Count + 1
+                    Headers     = $model.Headers
+                    HeaderKeys  = $model.HeaderKeys
+                    Fingerprint = ($model.HeaderKeys -join '|')
+                    Rows        = [System.Collections.ArrayList]@()
+                    Tables      = [System.Collections.ArrayList]@()
+                }
+                [void]$groups.Add($group)
+                $matchScore = 1.0
+            } else {
+                $group = $groupMatch.Group
+                $matchScore = $groupMatch.Score
+            }
+
+            $tableRecord = [PSCustomObject]@{
+                GroupId        = $group.Id
+                MatchScore     = $matchScore
+                CompanyId      = $pageAttribution.CompanyId
+                CompanyName    = $pageAttribution.CompanyName
+                SpaceKey       = $page.SpaceKey
+                SpaceName      = $page.SpaceName
+                PageId         = $page.id
+                PageTitle      = $page.title
+                PageUrl        = $page.FullUrl
+                TableIndex     = $tableIndex
+                HeaderRowCount = $model.HeaderRowCount
+                ColumnCount    = $model.ColumnCount
+                DataRowCount   = $model.DataRows.Count
+                Headers        = ($model.Headers -join ' | ')
+                HeaderKeys     = ($model.HeaderKeys -join ' | ')
+            }
+
+            [void]$group.Tables.Add($tableRecord)
+            [void]$inventory.Add($tableRecord)
+
+            $rowIndex = 0
+            foreach ($dataRow in $model.DataRows) {
+                $rowIndex++
+                $row = [ordered]@{
+                    CompanyId  = $pageAttribution.CompanyId
+                    CompanyName= $pageAttribution.CompanyName
+                    SpaceKey   = $page.SpaceKey
+                    SpaceName  = $page.SpaceName
+                    PageId     = $page.id
+                    PageTitle  = $page.title
+                    PageUrl    = $page.FullUrl
+                    TableIndex = $tableIndex
+                    RowIndex   = $rowIndex
+                }
+
+                for ($columnIndex = 0; $columnIndex -lt $group.Headers.Count; $columnIndex++) {
+                    $row[$group.Headers[$columnIndex]] = if ($columnIndex -lt $dataRow.Count) { $dataRow[$columnIndex] } else { "" }
+                }
+
+                [void]$group.Rows.Add([PSCustomObject]$row)
+            }
+        }
+
+        $html = $null
+        $doc = $null
+    }
+
+    $groupSummaries = [System.Collections.ArrayList]@()
+    foreach ($group in $groups) {
+        $nameSeed = if ($group.Headers.Count -gt 0) { ($group.Headers | Select-Object -First 4) -join '-' } else { "schema" }
+        $safeName = Get-SafeFilename -Name $nameSeed -MaxLength 70
+        if ([string]::IsNullOrWhiteSpace($safeName)) { $safeName = "schema" }
+
+        $csvPath = Join-Path $OutDir ("schema-{0:D3}-{1}.csv" -f $group.Id, $safeName)
+        $schemaPath = Join-Path $OutDir ("schema-{0:D3}-{1}.schema.json" -f $group.Id, $safeName)
+        $headers = @($metadataHeaders + $group.Headers)
+
+        if ($group.Rows.Count -gt 0) {
+            $group.Rows | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+        } else {
+            Write-CsvHeaderOnly -Path $csvPath -Headers $headers
+        }
+
+        $schema = [PSCustomObject]@{
+            GroupId     = $group.Id
+            CsvPath     = $csvPath
+            Fingerprint = $group.Fingerprint
+            Headers     = $group.Headers
+            HeaderKeys  = $group.HeaderKeys
+            TableCount  = $group.Tables.Count
+            RowCount    = $group.Rows.Count
+            Tables      = $group.Tables
+        }
+        $schema | ConvertTo-Json -Depth 10 | Out-File $schemaPath -Encoding UTF8
+
+        [void]$groupSummaries.Add([PSCustomObject]@{
+            GroupId     = $group.Id
+            CsvPath     = $csvPath
+            SchemaPath  = $schemaPath
+            Fingerprint = $group.Fingerprint
+            TableCount  = $group.Tables.Count
+            RowCount    = $group.Rows.Count
+            Headers     = ($group.Headers -join ' | ')
+        })
+    }
+
+    $inventoryCsvPath = Join-Path $OutDir "table-inventory.csv"
+    $inventoryJsonPath = Join-Path $OutDir "table-inventory.json"
+    $summaryPath = Join-Path $OutDir "table-export-summary.json"
+    $warningsPath = Join-Path $OutDir "table-export-warnings.json"
+
+    if ($inventory.Count -gt 0) {
+        $inventory | Export-Csv -Path $inventoryCsvPath -NoTypeInformation -Encoding UTF8
+        $inventory | ConvertTo-Json -Depth 10 | Out-File $inventoryJsonPath -Encoding UTF8
+    } else {
+        Write-CsvHeaderOnly -Path $inventoryCsvPath -Headers @('GroupId','MatchScore','CompanyId','CompanyName','SpaceKey','SpaceName','PageId','PageTitle','PageUrl','TableIndex','HeaderRowCount','ColumnCount','DataRowCount','Headers','HeaderKeys')
+        @() | ConvertTo-Json | Out-File $inventoryJsonPath -Encoding UTF8
+    }
+
+    if ($parseWarnings.Count -gt 0) {
+        $parseWarnings | ConvertTo-Json -Depth 5 | Out-File $warningsPath -Encoding UTF8
+    }
+
+    $totalExportedRows = ($groups | ForEach-Object { $_.Rows.Count } | Measure-Object -Sum).Sum
+    if ($null -eq $totalExportedRows) { $totalExportedRows = 0 }
+
+    $summary = [PSCustomObject]@{
+        Enabled              = $true
+        OutputDir            = $OutDir
+        GeneratedAt          = (Get-Date)
+        SchemaMatchThreshold = $SchemaMatchThreshold
+        GroupCount           = $groups.Count
+        TableCount           = $inventory.Count
+        RowCount             = [int]$totalExportedRows
+        InventoryCsvPath     = $inventoryCsvPath
+        InventoryJsonPath    = $inventoryJsonPath
+        WarningsPath         = if ($parseWarnings.Count -gt 0) { $warningsPath } else { $null }
+        Groups               = $groupSummaries
+    }
+
+    $summary | ConvertTo-Json -Depth 10 | Out-File $summaryPath -Encoding UTF8
+    return $summary
 }

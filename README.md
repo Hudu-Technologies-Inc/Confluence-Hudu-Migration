@@ -44,10 +44,14 @@ After entering these, your credentials are verified and encoded and we verify yo
 
 ## Setup
 
-If you plan on migrating articles to individual companies, you'll want to first create those companies in Hudu, so they can be attributed as you like.
+If you plan on migrating articles to individual companies, you can either create those companies in Hudu first or use the per-space destination option to match Confluence space names to Hudu companies and create any missing companies automatically.
 
 > [!IMPORTANT]
 > whether you intend to move articles to central kb or company kb (or both) make sure that your Hudu instance does not have these core features switched off first.
+
+Optional: set `$ExportConfluenceTables = $true` in your environment file, or set the environment variable `CONFLUENCE_EXPORT_TABLES=true`, to export detected Confluence HTML tables into grouped CSVs under the run's logs folder. `$ConfluenceTableSchemaMatchThreshold` controls fuzzy schema grouping and defaults to `0.86`.
+
+Archived Confluence pages are skipped by default with `$SkipArchivedConfluenceContent = $true`. Set it to `$false` only if you intentionally want to include non-current Confluence content.
 
 <img width="2322" height="2338" alt="image" src="https://github.com/user-attachments/assets/c97bbc43-9d17-4b96-844d-2961e09355d4" />
 
@@ -80,7 +84,7 @@ If you selected to decide each time per-article, you'll then choose one of the f
 ## Main Migration
 
 ### Step 1: Stubbing Articles
-Article stubs will be created so we can correlate Hudu Article id's later. If you chose to decide on where to migrate articles on a per-article basis, you are shown a sample of each article and decide which companies (or central kb) to migrate these to. At this point, articles will just contain a 'preview' of the article bodies.
+Article stubs will be created so we can correlate Hudu Article id's later. If you chose to decide on where to migrate articles on a per-article basis, you are shown a sample of each article and decide which companies (or central kb) to migrate these to. If you chose the per-space destination option, the script maps each Confluence space to a matching Hudu company by name and creates missing companies before stubbing articles. At this point, articles will just contain a 'preview' of the article bodies.
 
 <img width="1204" alt="image" src="https://github.com/user-attachments/assets/e635fdd9-493f-4df9-89ec-9e580f0c00ca" />
 
@@ -122,6 +126,8 @@ and based on your confluence page metadata, these are replaced with the equivile
 Your Main log file can be found in `logs\ConfluenceTransfer.log`
 
 <img width="592" alt="image" src="https://github.com/user-attachments/assets/5f639aba-e436-4e4d-b91b-742e253c7b2a" />
+
+If table export is enabled, grouped CSVs, schema JSON files, and `table-inventory.csv` are written to `$LogsDir\tables`.
 
 You will also have a summary json file in the same folder, named `job-summary.json`, which includes any brief messages about articles you skipped, attachments that were too large, or any other issues otherwise. It also includes some handy at-a-glance info about our 
 
