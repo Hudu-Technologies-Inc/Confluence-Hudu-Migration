@@ -893,8 +893,13 @@ function Cleanup-ResidualConfluenceHtml {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string]$Html
     )
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+        return ''
+    }
 
     # Normalize self-closing tags
     $Html = $Html -replace '<p\s*/>', '<p></p>'

@@ -490,12 +490,36 @@ foreach ($page in $StubbedPages) {
     PrintAndLog -Message "Updating HTML content for $($page.title)" -Color Yellow
     # $updatedHtml = Strip-ConfluenceBloat -Html $rawContent
     # $updatedHtml = Replace-ConfluenceAttachmentTags -Html $updatedHtml -ImageMap $ImageMap -HuduBaseUrl $HuduBaseUrl
-    $updatedHtml = Convert-ConfluenceHtml `
-        -Html $rawContent `
-        -ImageMap $ImageMap `
-        -HuduBaseUrl $HuduBaseUrl
-    $updatedHtml = Cleanup-ResidualConfluenceHtml -Html $updatedHtml
-    $page.charsTrimmed =  $rawContent.length - $updatedHtml.length
+    $blankArticleHtml = '<p>&nbsp;</p>'
+
+    if ([string]::IsNullOrWhiteSpace($rawContent)) {
+        PrintAndLog -Message "Raw HTML content is empty for $($page.title). Using blank article placeholder." -Color Yellow
+        $updatedHtml = $blankArticleHtml
+    } else {
+        $updatedHtml = Convert-ConfluenceHtml `
+            -Html $rawContent `
+            -ImageMap $ImageMap `
+            -HuduBaseUrl $HuduBaseUrl
+
+        if ([string]::IsNullOrWhiteSpace($updatedHtml)) {
+            PrintAndLog -Message "Converted HTML content is empty for $($page.title). Falling back to raw content." -Color Yellow
+            $updatedHtml = $rawContent
+        } else {
+            $updatedHtml = Cleanup-ResidualConfluenceHtml -Html $updatedHtml
+
+            if ([string]::IsNullOrWhiteSpace($updatedHtml)) {
+                PrintAndLog -Message "Cleaned HTML content is empty for $($page.title). Falling back to raw content." -Color Yellow
+                $updatedHtml = $rawContent
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($updatedHtml)) {
+        PrintAndLog -Message "Prepared HTML content is empty for $($page.title). Using blank article placeholder." -Color Yellow
+        $updatedHtml = $blankArticleHtml
+    }
+
+    $page.charsTrimmed =  [Math]::Max(0, (($rawContent ?? '').Length - ($updatedHtml ?? '').Length))
     PrintAndLog -Message "Removed $($page.charsTrimmed) characters of bloat from $($page.title)" -Color Green
     $page.PreparedHtmlPath = Save-MigrationHtmlContent -PageId $page.id -Title $page.title -Content $updatedHtml -Suffix "after" -OutDir $TmpOutputDir
     Write-Host "Saved HTML snapshot: $($page.PreparedHtmlPath)"
