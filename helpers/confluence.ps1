@@ -17,7 +17,7 @@ function Get-AttachmentsForPage {
         [string]$AuthHeader
     )
 
-    $AllAttachments = @()
+    $AllAttachments = [System.Collections.ArrayList]@()
     $limit = 50
     $attachmentsUrl = "$BaseUrl/api/v2/pages/$PageId/attachments?limit=$limit"
 
@@ -28,7 +28,9 @@ function Get-AttachmentsForPage {
                 Accept        = 'application/json'
             }
 
-            $AllAttachments += $attachResponse.results
+            foreach ($attachment in @($attachResponse.results)) {
+                [void]$AllAttachments.Add($attachment)
+            }
             $nextPath = $attachResponse._links.next
             $attachmentsUrl = if ($nextPath) {
                 Resolve-ConfluenceUrl -BaseUrl $BaseUrl -PathOrUrl $nextPath
@@ -52,7 +54,9 @@ function Get-AttachmentsForPage {
             Accept        = 'application/json'
         }
 
-        $AllAttachments += $attachResponse.results
+        foreach ($attachment in @($attachResponse.results)) {
+            [void]$AllAttachments.Add($attachment)
+        }
         $start += $limit
     } while ($attachResponse.size -eq $limit)
 
@@ -210,7 +214,7 @@ function GetAllPages {
         [bool]$SkipArchived = $true
     )
 
-    $AllPages = @()
+    $AllPages = [System.Collections.ArrayList]@()
     $limit = 25
 
     # Use v2 API if SpaceId provided, fall back to v1 if not
@@ -255,7 +259,7 @@ function GetAllPages {
                 $page | Add-Member -NotePropertyName FullUrl  -NotePropertyValue "$baseUrl$($page._links.webui)" -Force
                 $page | Add-Member -NotePropertyName SpaceKey -NotePropertyValue "$SpaceKey" -Force
                 $page | Add-Member -NotePropertyName SpaceName -NotePropertyValue "$SpaceName" -Force
-                $AllPages += $page
+                [void]$AllPages.Add($page)
             }
         }
 
@@ -1441,7 +1445,7 @@ function Export-ConfluenceTables {
     $metadataHeaders = @('CompanyId','CompanyName','SpaceKey','SpaceName','PageId','PageTitle','PageUrl','TableIndex','RowIndex')
 
     foreach ($page in $Pages) {
-        $html = $page.htmlContent ?? $page.body.storage.value
+        $html = Get-MigrationPageHtmlContent -Page $page -Path $page.RawHtmlPath -Default $null
         if ([string]::IsNullOrWhiteSpace($html) -or $html -notmatch '<table\b') {
             continue
         }
@@ -1534,6 +1538,9 @@ function Export-ConfluenceTables {
                 [void]$group.Rows.Add([PSCustomObject]$row)
             }
         }
+
+        $html = $null
+        $doc = $null
     }
 
     $groupSummaries = [System.Collections.ArrayList]@()

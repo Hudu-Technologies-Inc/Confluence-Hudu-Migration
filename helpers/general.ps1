@@ -75,6 +75,47 @@ $propertyDump
 }
 
 
+function Get-HtmlSnapshotPath {
+    param (
+        [Parameter(Mandatory)][string]$PageId,
+        [Parameter(Mandatory)][string]$Title,
+        [Parameter(Mandatory)][string]$Suffix,
+        [Parameter(Mandatory)][string]$OutDir
+    )
+
+    $safeTitle = ($Title -replace '[^\w\d\-]', '_') -replace '_+', '_'
+    $filename = "${PageId}_${safeTitle}_${Suffix}.html"
+    return (Join-Path -Path $OutDir -ChildPath $filename)
+}
+
+function Save-MigrationHtmlContent {
+    param (
+        [Parameter(Mandatory)][string]$PageId,
+        [Parameter(Mandatory)][string]$Title,
+        [AllowNull()][string]$Content,
+        [Parameter(Mandatory)][string]$Suffix,
+        [Parameter(Mandatory)][string]$OutDir
+    )
+
+    $path = Get-HtmlSnapshotPath -PageId $PageId -Title $Title -Suffix $Suffix -OutDir $OutDir
+    try {
+        [System.IO.File]::WriteAllText(
+            $path,
+            ($Content ?? ''),
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        return $path
+    } catch {
+        Write-ErrorObjectsToFile -Name "$($_.safeTitle ?? "unnamed")" -ErrorObject @{
+            Error       = $_
+            PageId      = $PageId 
+            ContentLength = if ($null -ne $Content) { $Content.Length } else { 0 }
+            Message     ="Error Saving HTML Content"
+            OutDir      = $OutDir
+        }
+    }
+}
+
 function Save-HtmlSnapshot {
     param (
         [Parameter(Mandatory)][string]$PageId,
@@ -84,22 +125,58 @@ function Save-HtmlSnapshot {
         [Parameter(Mandatory)][string]$OutDir
     )
 
-    $safeTitle = ($Title -replace '[^\w\d\-]', '_') -replace '_+', '_'
-    $filename = "${PageId}_${safeTitle}_${Suffix}.html"
-    $path = Join-Path -Path $OutDir -ChildPath $filename
-
-    try {
-        $Content | Out-File -FilePath $path -Encoding UTF8
+    $path = Save-MigrationHtmlContent -PageId $PageId -Title $Title -Content $Content -Suffix $Suffix -OutDir $OutDir
+    if ($path) {
         Write-Host "Saved HTML snapshot: $path"
-    } catch {
-        Write-ErrorObjectsToFile -Name "$($_.safeTitle ?? "unnamed")" -ErrorObject @{
-            Error       = $_
-            PageId      = $PageId 
-            Content     = $Content
-            Message     ="Error Saving HTML Snapshot"
-            OutDir      = $OutDir
+    }
+}
+
+function Get-MigrationPageHtmlContent {
+    param (
+        [object]$Page,
+        [string]$Path,
+        [string]$Default = "No Content Found in Confluence Page"
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Path) -and (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    }
+
+    foreach ($propertyName in @('htmlContent','rawContent','updatedHtml')) {
+        if ($null -ne $Page -and $Page.PSObject.Properties[$propertyName] -and -not [string]::IsNullOrWhiteSpace($Page.$propertyName)) {
+            return $Page.$propertyName
         }
     }
+
+    if ($null -ne $Page -and $Page.body -and $Page.body.storage -and -not [string]::IsNullOrWhiteSpace($Page.body.storage.value)) {
+        return $Page.body.storage.value
+    }
+
+    return $Default
+}
+
+function Clear-MigrationPageHtmlMemory {
+    param([object]$Page)
+
+    if ($null -eq $Page) { return }
+
+    foreach ($propertyName in @('htmlContent','rawContent','updatedHtml')) {
+        if ($Page.PSObject.Properties[$propertyName]) {
+            $Page.$propertyName = $null
+        }
+    }
+
+    try {
+        if ($Page.body -and $Page.body.storage -and $Page.body.storage.PSObject.Properties['value']) {
+            $Page.body.storage.value = $null
+        }
+    } catch {}
+}
+
+function Invoke-MigrationMemoryCleanup {
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
+    [System.GC]::Collect()
 }
 function Get-PercentDone {
     param (
@@ -472,6 +549,7 @@ function Get-ArticlePreviewBlock {
         [int]$MaxLength = 200
     )
     $descriptor = "ID: $PageId, titled $Title"
+    $Content = $Content ?? ''
     $snippet = if ($Content.Length -gt $MaxLength) {
         $Content.Substring(0, $MaxLength) + "..."
     } else {
@@ -528,13 +606,13 @@ function Get-LinksFromHTML {
 
     )
 
-    $allLinks = @()
+    $allLinks = [System.Collections.ArrayList]@()
 
     # Match all href attributes inside anchor tags
     $hrefPattern = '<a\s[^>]*?href=["'']([^"'']+)["'']'
     $hrefMatches = [regex]::Matches($htmlContent, $hrefPattern, 'IgnoreCase')
     foreach ($match in $hrefMatches) {
-        $allLinks += $match.Groups[1].Value
+        [void]$allLinks.Add($match.Groups[1].Value)
     }
 
     if ($includeImages) {
@@ -542,7 +620,7 @@ function Get-LinksFromHTML {
         $srcPattern = '<img\s[^>]*?src=["'']([^"'']+)["'']'
         $srcMatches = [regex]::Matches($htmlContent, $srcPattern, 'IgnoreCase')
         foreach ($match in $srcMatches) {
-            $allLinks += $match.Groups[1].Value
+            [void]$allLinks.Add($match.Groups[1].Value)
         }
     }
     if ($false -eq $suppressOutput){

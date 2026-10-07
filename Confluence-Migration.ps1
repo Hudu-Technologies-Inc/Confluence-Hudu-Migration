@@ -25,12 +25,70 @@ if ($MyInvocation.InvocationName -eq '.') {
 $project_workdir=$PSScriptRoot; foreach ($h in @("init","confluence","general")){. "$project_workdir\helpers\$h.ps1"};
 
 $PowershellVersion = [version](Get-Host).Version; $HuduAppInfo = Get-HuduAppInfo; $CurrentHuduVersion = [version]$HuduAppInfo.version; $articlesEnabled = Get-HuduFeatureAvailability -Core_Feature articles;
-$NonInteractive = Get-CoercedBoolean -Value ($noninteractive ?? $env:CONFLUENCE_NONINTERACTIVE ?? $env:NONINTERACTIVE) -Default $false; $ExportConfluenceTables = Get-CoercedBoolean -Value ($ExportConfluenceTables ?? $env:CONFLUENCE_EXPORT_TABLES ?? $env:EXPORT_CONFLUENCE_TABLES) -Default $false; $ConfluenceTableSchemaMatchThreshold = Get-CoercedDouble -Value ($ConfluenceTableSchemaMatchThreshold ?? $env:CONFLUENCE_TABLE_SCHEMA_MATCH_THRESHOLD) -Default 0.86; $SkipArchivedConfluenceContent = Get-CoercedBoolean -Value ($SkipArchivedConfluenceContent ?? $env:CONFLUENCE_SKIP_ARCHIVED ?? $env:SKIP_ARCHIVED_CONFLUENCE_CONTENT) -Default $true;
+$NonInteractive = Get-CoercedBoolean -Value ($noninteractive ?? $env:CONFLUENCE_NONINTERACTIVE ?? $env:NONINTERACTIVE) -Default $false; $ExportConfluenceTables = Get-CoercedBoolean -Value ($ExportConfluenceTables ?? $env:CONFLUENCE_EXPORT_TABLES ?? $env:EXPORT_CONFLUENCE_TABLES) -Default $false; $ConfluenceTableSchemaMatchThreshold = Get-CoercedDouble -Value ($ConfluenceTableSchemaMatchThreshold ?? $env:CONFLUENCE_TABLE_SCHEMA_MATCH_THRESHOLD) -Default 0.86; $SkipArchivedConfluenceContent = Get-CoercedBoolean -Value ($SkipArchivedConfluenceContent ?? $env:CONFLUENCE_SKIP_ARCHIVED ?? $env:SKIP_ARCHIVED_CONFLUENCE_CONTENT) -Default $true; $TrackAttachmentDetails = Get-CoercedBoolean -Value ($TrackAttachmentDetails ?? $env:CONFLUENCE_TRACK_ATTACHMENT_DETAILS) -Default $false;
 
 if ($PowershellVersion -lt $requiredPowershellVersion) {Write-Host "PowerShell $requiredPowershellVersion or higher is required. You have $PowershellVersion." -ForegroundColor Red; exit 1;} 
 if ($CurrentHuduVersion -lt [version]$RequiredHuduVersion) {Write-Host "This script requires at least version $RequiredHuduVersion and cannot run with version $CurrentHuduVersion. Please update your version of Hudu."; exit 1;}
 if ($false -eq $articlesEnabled.CentralKB -and $false -eq $articlesEnabled.CompanyKB) {Write-Host "Articles feature is not enabled in Hudu. Exiting script." -ForegroundColor Red; exit 1;}
-$ImageMap = @{}; $ConfluenceToHuduUrlMap = @{}; $Article_Relinking=@{}; $RunSummary=Start-RunSummary; $TrackedAttachments = [System.Collections.ArrayList]@(); $AllReplacedLinks =  [System.Collections.ArrayList]@(); $AllFoundLinks =[System.Collections.ArrayList]@(); $AllNewLinks = [System.Collections.ArrayList]@(); $SourcePages = @();
+$ImageMap = @{}; $ConfluenceToHuduUrlMap = @{}; $Article_Relinking=@{}; $RunSummary=Start-RunSummary; $TrackedAttachments = if ($TrackAttachmentDetails) { [System.Collections.ArrayList]@() } else { $null }; $LinksCreatedCount = 0; $LinksFoundCount = 0; $LinksReplacedCount = 0; $SourcePages = [System.Collections.ArrayList]@();
+
+function Initialize-ConfluenceSourcePage {
+    param([Parameter(Mandatory)][object]$Page)
+
+    $Page | Add-Member -NotePropertyName FetchedBy      -NotePropertyValue $localhost_name -Force
+    $Page | Add-Member -NotePropertyName OriginalTitle  -NotePropertyValue $Page.title -Force
+    $Page | Add-Member -NotePropertyName title          -NotePropertyValue $(Get-SafeTitle -name $Page.title) -Force
+
+    $rawHtml = Get-MigrationPageHtmlContent -Page $Page -Path $null
+    $rawHtmlPath = Save-MigrationHtmlContent -PageId $Page.id -Title $Page.title -Content $rawHtml -Suffix "before" -OutDir $TmpOutputDir
+    $Page | Add-Member -NotePropertyName RawHtmlPath      -NotePropertyValue $rawHtmlPath -Force
+    $Page | Add-Member -NotePropertyName PreparedHtmlPath -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName FinalHtmlPath    -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName htmlContent      -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName rawContent       -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName articlePreview   -NotePropertyValue $(Get-ArticlePreviewBlock -Title $Page.title -PageId $Page.id -Content $rawHtml -MaxLength $RunSummary.SetupInfo.PreviewLength) -Force
+
+    $extractedLinks = @(Get-LinksFromHTML -htmlContent $rawHtml -title $Page.title -includeImages $false)
+    $Page | Add-Member -NotePropertyName Links      -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName LinksCount -NotePropertyValue $extractedLinks.Count -Force
+    $Page | Add-Member -NotePropertyName BaseLinks  -NotePropertyValue $(Get-ConfluenceLinks -page $Page) -Force
+    $script:LinksFoundCount += @($Page.BaseLinks).Count + $extractedLinks.Count
+
+    $Page | Add-Member -NotePropertyName stub          -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName updatedHtml   -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName CompanyId     -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName ReplacedLinks -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName ReplacedLinksCount -NotePropertyValue 0 -Force
+    $Page | Add-Member -NotePropertyName HuduArticle   -NotePropertyValue $null -Force
+    $Page | Add-Member -NotePropertyName CharsTrimmed  -NotePropertyValue 0 -Force
+
+    $attachments = Get-AttachmentsForPage -baseUrl $ConfluenceBaseUrl -pageId $Page.id -authHeader "Basic $encodedCreds"
+    $Page | Add-Member -NotePropertyName attachments -NotePropertyValue $attachments -Force
+
+    write-host "page: $Page from space $($Page.SpaceKey ?? $Page.space.key)"
+    $attachidx=0
+    foreach ($attachment in $Page.attachments) {
+        $attachidx=$attachidx+1
+        $RunSummary.JobInfo.AttachmentsFound+=1
+        write-host "    attachment $attachidx- $attachment"
+    }
+
+    Clear-MigrationPageHtmlMemory -Page $Page
+    $rawHtml = $null
+    $extractedLinks = $null
+    return $Page
+}
+
+function Add-ConfluenceSourcePages {
+    param([object[]]$Pages)
+
+    foreach ($page in @($Pages)) {
+        $initializedPage = Initialize-ConfluenceSourcePage -Page $page
+        [void]$script:SourcePages.Add($initializedPage)
+    }
+
+    Invoke-MigrationMemoryCleanup
+}
 
 # Step 1.1- Get spaces and select which or all spaces to get pages from
 PrintAndLog -message  "Getting All Spaces and configuring Source options (Confluence-Side)" -Color Blue
@@ -52,62 +110,18 @@ if ([int]$RunSummary.JobInfo.MigrationSource.Identifier -eq 0) {
     $SingleChosenSpace = Select-ConfluenceSpace -Spaces $AllSpaces -NonInteractive $NonInteractive -PreselectedSingleSpace $preselectedSingleSpace
     $RunSummary.JobInfo.Spaces.Add($SingleChosenSpace) | Out-Null
     $RunSummary.JobInfo.MigrationSource.OptionMessage="$($RunSummary.JobInfo.MigrationSource.OptionMessage) (space: $($SingleChosenSpace.name)/$($SingleChosenSpace.key))"
-    $SourcePages=$(GetAllPages -SpaceKey $SingleChosenSpace.key -SpaceName $SingleChosenSpace.name -SpaceId $SingleChosenSpace.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl -SkipArchived $SkipArchivedConfluenceContent)
+    Add-ConfluenceSourcePages -Pages @(GetAllPages -SpaceKey $SingleChosenSpace.key -SpaceName $SingleChosenSpace.name -SpaceId $SingleChosenSpace.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl -SkipArchived $SkipArchivedConfluenceContent)
 } else {
     foreach ($space in $AllSpaces) {
         PrintAndLog -message "Obtaining Pages from space: $($space.name)/$($space.key)" -Color Blue
         $RunSummary.JobInfo.Spaces.Add($space) | Out-Null
-        $addedPages = $(GetAllPages -SpaceKey $space.key -SpaceName $space.name -SpaceId $space.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl -SkipArchived $SkipArchivedConfluenceContent)
-        $SourcePages+=$addedPages
+        $addedPages = @(GetAllPages -SpaceKey $space.key -SpaceName $space.name -SpaceId $space.id -authHeader "Basic $encodedCreds" -baseUrl $ConfluenceBaseUrl -SkipArchived $SkipArchivedConfluenceContent)
+        Add-ConfluenceSourcePages -Pages $addedPages
+        $addedPages = $null
     }
 }
 
 $RunSummary.JobInfo.PagesCount = $SourcePages.count
-foreach ($page in $SourcePages) {
-    $page | Add-Member -NotePropertyName FetchedBy     -NotePropertyValue $localhost_name -Force
-    $page | Add-Member -NotePropertyName OriginalTitle -NotePropertyValue $page.title -Force
-    $page | Add-Member -NotePropertyName title         -NotePropertyValue $(Get-SafeTitle -name $page.title) -Force
-    $page | Add-Member -NotePropertyName htmlContent   -NotePropertyValue $page.body.storage.value -Force
-    $page | Add-Member -NotePropertyName rawContent    -NotePropertyValue $page.body.storage.value -Force
-    $page | Add-Member -NotePropertyName articlePreview -NotePropertyValue $(Get-ArticlePreviewBlock -Title $page.title -PageId $page.id -Content $page.body.storage.value -MaxLength $RunSummary.SetupInfo.PreviewLength) -Force
-    $page | Add-Member -NotePropertyName Links         -NotePropertyValue $(Get-LinksFromHTML -htmlContent $page.body.storage.value -title $page.title -includeImages $false) -Force
-    $page | Add-Member -NotePropertyName BaseLinks     -NotePropertyValue $(Get-ConfluenceLinks -page $page) -Force
-    $page | Add-Member -NotePropertyName stub          -NotePropertyValue $null -Force
-    $page | Add-Member -NotePropertyName updatedHtml   -NotePropertyValue $null -Force
-    $page | Add-Member -NotePropertyName CompanyId     -NotePropertyValue $null -Force
-    $page | Add-Member -NotePropertyName ReplacedLinks -NotePropertyValue $null -Force
-    $page | Add-Member -NotePropertyName HuduArticle   -NotePropertyValue $null -Force
-    $page | Add-Member -NotePropertyName CharsTrimmed  -NotePropertyValue 0 -Force
-    $attachments = Get-AttachmentsForPage -baseUrl $ConfluenceBaseUrl -pageId $page.id -authHeader "Basic $encodedCreds"
-    $page | Add-Member -NotePropertyName attachments -NotePropertyValue $attachments -Force
-
-
-    foreach ($link in $page.BaseLinks) {
-        $AllFoundLinks.add([PSCustomObject]@{
-            Type       = 'BaseLink'
-            PageId     = $page.id
-            PageTitle  = $page.title
-            Link       = $link
-        })
-    }
-
-    foreach ($link in $page.Links) {
-        $AllFoundLinks.add([PSCustomObject]@{
-            Type       = 'ExtractedHtmlLink'
-            PageId     = $page.id
-            PageTitle  = $page.title
-            Link       = $link.href
-        })
-    }
-
-    write-host "page: $page from space $($page.space.key)"
-    $attachidx=0
-    foreach ($attachment in $page.attachments) {
-        $attachidx=$attachidx+1
-        $RunSummary.JobInfo.AttachmentsFound+=1
-        write-host "    attachment $attachidx- $attachment"
-    }
-}
 
 if ($RunSummary.JobInfo.PagesCount -eq 0) {
     PrintAndLog -message  "Sorry, we didnt seem to see any Source Articles/Pages in Confluence! Double-check your credentials and try again." -Color Red
@@ -283,7 +297,7 @@ $RunSummary.CompletedStates += "$($RunSummary.State) finished in $($($(Get-Date)
 $RunSummary.State="Stubbing articles"
 write-host "Part $($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta
 
-$StubbedPages=@()
+$StubbedPages=[System.Collections.ArrayList]@()
 $PageIDX=0
 foreach ($page in $SourcePages) {
     $PageIDX=$PageIDX+1
@@ -347,16 +361,11 @@ foreach ($page in $SourcePages) {
     }
     $RunSummary.JobInfo.ArticlesCreated+=1
     $RunSummary.JobInfo.LinksCreated+=1
-    $AllNewLinks.Add([PSCustomObject]@{
-        PageId        = $page.id
-        PageTitle     = $page.title
-        HuduUrl       = $page.stub.url
-        ArticleId     = $page.stub.id
-    })
+    $LinksCreatedCount+=1
     foreach ($baseLink in $page.BaseLinks) {
         $ConfluenceToHuduUrlMap[$baseLink] = $page.stub.url
     }
-    $StubbedPages+=$page
+    [void]$StubbedPages.Add($page)
     Write-Progress -Activity "Stubbing $($page.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
 }
 
@@ -365,7 +374,7 @@ if ($ExportConfluenceTables) {
     PrintAndLog -message "Auxiliary Confluence table export enabled. Writing grouped CSVs and schema inventory to $tableExportDir" -Color Cyan
     try {
         $tableExportSummary = Export-ConfluenceTables `
-            -Pages $SourcePages `
+            -Pages @($SourcePages) `
             -OutDir $tableExportDir `
             -SpaceCompanyMap $SpaceCompanyMap `
             -SingleCompanyChoice $SingleCompanyChoice `
@@ -435,7 +444,9 @@ foreach ($page in $StubbedPages) {
             }
         }
 
-        [void]$TrackedAttachments.Add($record)
+        if ($TrackAttachmentDetails -and $null -ne $TrackedAttachments) {
+            [void]$TrackedAttachments.Add($record)
+        }
 
         if ($record -and $record.SuccessDownload -and $record.LocalPath) {
             printandlog -message "Downloaded Attachment $AttachIDX of $($page.attachments.Count) for $($page.title) - $($record.FileName)" -Color Yellow
@@ -484,25 +495,9 @@ foreach ($page in $StubbedPages) {
                 } else {
                     $huduFileUploadUrl
                 }
-                $AllNewLinks.Add([PSCustomObject]@{
-                    PageId        = $page.id
-                    PageTitle     = $page.title
-                    LocalFile     = $record.FileName
-                    HuduUrl       = $huduUploadUrl
-                    HuduUploadId  = $upload.id
-                    HuduUploadSlug= $upload.slug
-                    HuduUploadType= if ($publicPhoto) { 'public_photo' } else { 'upload' }
-                })
+                $LinksCreatedCount+=1
                 if ($fileUpload -and $publicPhoto) {
-                    $AllNewLinks.Add([PSCustomObject]@{
-                        PageId        = $page.id
-                        PageTitle     = $page.title
-                        LocalFile     = $record.FileName
-                        HuduUrl       = $huduFileUploadUrl
-                        HuduUploadId  = $fileUpload.id
-                        HuduUploadSlug= $fileUpload.slug
-                        HuduUploadType= 'upload'
-                    })
+                    $LinksCreatedCount+=1
                 }
                 $normalizedFileName = $record.FileName.ToLowerInvariant()
                 $embeddableMediaKind = Get-HuduEmbeddableUploadMediaKind -Path $record.FileName
@@ -560,21 +555,20 @@ foreach ($page in $StubbedPages) {
 
     # Find and replace image URLs with base64-encoded versions 
 
-    $page.rawContent  = if ($null -ne $page.htmlContent -and $page.htmlContent.length -ge 1) {$page.htmlContent} else {"No Content Found in Confluence Page"}
-    $page.updatedHtml = if ($null -ne $page.htmlContent -and $page.htmlContent.length -ge 1) {$page.htmlContent} else {"No Content Found in Confluence Page"}
-    Save-HtmlSnapshot -PageId $page.id -Title $page.title -Content $page.rawContent -Suffix "before" -OutDir $TmpOutputDir
+    $rawContent = Get-MigrationPageHtmlContent -Page $page -Path $page.RawHtmlPath
 
     PrintAndLog -Message "Updating HTML content for $($page.title)" -Color Yellow
-    # $page.updatedHtml = Strip-ConfluenceBloat -Html $page.rawContent
-    # $page.updatedHtml = Replace-ConfluenceAttachmentTags -Html $page.updatedHtml -ImageMap $ImageMap -HuduBaseUrl $HuduBaseUrl
-    $page.updatedHtml = Convert-ConfluenceHtml `
-        -Html $page.rawContent `
+    # $updatedHtml = Strip-ConfluenceBloat -Html $rawContent
+    # $updatedHtml = Replace-ConfluenceAttachmentTags -Html $updatedHtml -ImageMap $ImageMap -HuduBaseUrl $HuduBaseUrl
+    $updatedHtml = Convert-ConfluenceHtml `
+        -Html $rawContent `
         -ImageMap $ImageMap `
         -HuduBaseUrl $HuduBaseUrl
-    $page.updatedHtml = Cleanup-ResidualConfluenceHtml -Html $page.updatedHtml        
-    $page.charsTrimmed =  $page.rawContent.length - $($page.updatedHtml).length
+    $updatedHtml = Cleanup-ResidualConfluenceHtml -Html $updatedHtml
+    $page.charsTrimmed =  $rawContent.length - $updatedHtml.length
     PrintAndLog -Message "Removed $($page.charsTrimmed) characters of bloat from $($page.title)" -Color Green
-    Save-HtmlSnapshot -PageId $page.id -Title $page.title -Content $($page.updatedHtml) -Suffix "after" -OutDir $TmpOutputDir
+    $page.PreparedHtmlPath = Save-MigrationHtmlContent -PageId $page.id -Title $page.title -Content $updatedHtml -Suffix "after" -OutDir $TmpOutputDir
+    Write-Host "Saved HTML snapshot: $($page.PreparedHtmlPath)"
 
 
     PrintAndLog "Prepared Article: $($page.articlePreview) to $($($page.CompanyId) ?? 'Global KB') with attachment links converted. Final content update is deferred until relinking." -Color Green
@@ -583,12 +577,16 @@ foreach ($page in $StubbedPages) {
     $Article_Relinking[$($page.stub).id]=[PSCustomObject]@{
         HuduArticle    = $page.stub
         Page           = $page
-        content        = $page.updatedHtml ?? "unknown contents"
-        Links          = $page.links
+        ContentPath    = $page.PreparedHtmlPath
+        FinalContentPath = $null
+        LinkCount      = $page.LinksCount
     }
     Write-Progress -Activity "Processing content for $($page.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
 
     $page | ConvertTo-Json -Depth 10 | Out-File "$TmpOutputDir\wip-page-$($page.title).json"
+    $rawContent = $null
+    $updatedHtml = $null
+    Clear-MigrationPageHtmlMemory -Page $page
 }
 
 $Article_Relinking.GetEnumerator() |
@@ -602,37 +600,55 @@ $RunSummary.State="Relinking Imported Articles"
 write-host "Part $($RunSummary.CompletedStates.count): $($RunSummary.State)" -ForegroundColor Magenta
 
 $PageIDX=0
-foreach ($id in $Article_Relinking.Keys) {
-    $entry = $Article_Relinking[$id]
+$ConfluencePageIdToRelinkEntry = @{}
+foreach ($entry in $Article_Relinking.Values) {
+    if ($entry.Page -and -not [string]::IsNullOrWhiteSpace($entry.Page.id)) {
+        $ConfluencePageIdToRelinkEntry[[string]$entry.Page.id] = $entry
+    }
+}
+$RelinkReplacementPages = @($StubbedPages | ForEach-Object {
+    [PSCustomObject]@{
+        Title    = $_.title
+        HuduUrl  = $_.HuduArticle.url ?? $_.stub.url
+        BaseLinks = $_.BaseLinks
+    }
+})
+
+foreach ($articleId in @($Article_Relinking.Keys)) {
+    $entry = $Article_Relinking[$articleId]
     $relPage = $entry.Page
-    $htmlContent = $entry.content ?? $relPage.updatedHtml ?? "unknown contents"
+    $htmlContent = Get-MigrationPageHtmlContent -Page $relPage -Path $entry.ContentPath -Default "unknown contents"
     $PageIDX=$PageIDX+1
 
     $pattern = 'https://' + [regex]::Escape($ConfluenceDomain) + '\.atlassian\.net[^"''\s<>]*'
     $htmlContent = $htmlContent -replace $pattern, ''
     $htmlContent = [regex]::Replace($htmlContent, 'content/(\d+)', {
         param($match)
-        $id = $match.Groups[1].Value
-        $page = $Article_Relinking.Values | Where-Object { $_.Page.id -eq $id }
-        if ($page) {
-            PrintAndLog -Message "Replacing REST content/$id with → $($page.HuduArticle.url)" -Color Cyan
-            return $page.HuduArticle.url
+        $matchedId = $match.Groups[1].Value
+        $targetEntry = $ConfluencePageIdToRelinkEntry[[string]$matchedId]
+        if ($targetEntry) {
+            $replacement = $targetEntry.HuduArticle.url ?? $targetEntry.Page.stub.url
+            PrintAndLog -Message "Replacing REST content/$matchedId with → $replacement" -Color Cyan
+            return $replacement
         }
         return $match.Value
     })
     $htmlContent = [regex]::Replace($htmlContent, 'pages/(\d+)', {
         param($match)
-        $id = $match.Groups[1].Value
-        $page = $Article_Relinking.Values | Where-Object { $_.Page.id -eq $id }
-        if ($page) {
-            PrintAndLog -Message "Replacing /pages/$id with → $($page.HuduArticle.url)" -Color Cyan
-            return $page.HuduArticle.url
+        $matchedId = $match.Groups[1].Value
+        $targetEntry = $ConfluencePageIdToRelinkEntry[[string]$matchedId]
+        if ($targetEntry) {
+            $replacement = $targetEntry.HuduArticle.url ?? $targetEntry.Page.stub.url
+            PrintAndLog -Message "Replacing /pages/$matchedId with → $replacement" -Color Cyan
+            return $replacement
         }
         return $match.Value
     })
 
     # 1. Replace direct match or /wiki<url>
     foreach ($confluenceUrl in $ConfluenceToHuduUrlMap.Keys) {
+        if ([string]::IsNullOrWhiteSpace($confluenceUrl)) { continue }
+
         $huduUrl = $ConfluenceToHuduUrlMap[$confluenceUrl]
         $escaped = [regex]::Escape($confluenceUrl)
 
@@ -649,15 +665,15 @@ foreach ($id in $Article_Relinking.Keys) {
         }
     }
  
-    # 2. Regex to match href="/12345" or href="/12345?someparam"
-    $pattern = 'https://' + [regex]::Escape($ConfluenceDomain) + '\.atlassian\.net/wiki(?:/[^"''\s<>]*)?'
+    # 2. Regex to match Confluence wiki URLs that contain a page id.
+    $pattern = 'https://' + [regex]::Escape($ConfluenceDomain) + '\.atlassian\.net/wiki(?:/[^"''\s<>]*?(\d+)[^"''\s<>]*)?'
     $htmlContent = [regex]::Replace($htmlContent, $pattern, {
         param($match)
         $matchedId = $match.Groups[1].Value
-        $matchedPage = $Article_Relinking.Values | Where-Object { $_.Page.id -eq $matchedId }
+        $matchedPage = if (-not [string]::IsNullOrWhiteSpace($matchedId)) { $ConfluencePageIdToRelinkEntry[[string]$matchedId] } else { $null }
 
         if ($matchedPage) {
-            $replacement = $matchedPage.HuduArticle.url
+            $replacement = $matchedPage.HuduArticle.url ?? $matchedPage.Page.stub.url
             PrintAndLog -Message "Replaced object refrence (PageId) url $matchedId → $replacement" -Color Cyan
             return $replacement
         }
@@ -679,14 +695,21 @@ foreach ($id in $Article_Relinking.Keys) {
     }
 
 # fixed so that links containing parentheses or other special characters are properly escaped in regex replacement
-    foreach ($sourcePage in $StubbedPages) {
-        $htmlContent = $htmlContent -replace [regex]::Escape($sourcePage.title), "<a href='$($sourcePage.HuduArticle.url ?? $sourcePage.stub.url)'>$($sourcePage.title)</a>"
+    foreach ($sourcePage in $RelinkReplacementPages) {
+        if ([string]::IsNullOrWhiteSpace($sourcePage.HuduUrl)) { continue }
+
+        if (-not [string]::IsNullOrWhiteSpace($sourcePage.Title) -and $htmlContent.IndexOf($sourcePage.Title, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            $htmlContent = $htmlContent -replace [regex]::Escape($sourcePage.Title), "<a href='$($sourcePage.HuduUrl)'>$($sourcePage.Title)</a>"
+        }
+
         foreach ($baselink in $sourcePage.BaseLinks) {
-            $htmlContent = $htmlContent -replace [regex]::Escape($baselink), $($sourcePage.HuduArticle.url ?? $sourcePage.stub.url)
+            if ([string]::IsNullOrWhiteSpace($baselink)) { continue }
+            if ($htmlContent.IndexOf($baselink, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                $htmlContent = $htmlContent -replace [regex]::Escape($baselink), $sourcePage.HuduUrl
+            }
         }
     }
 
-    $relPage.ReplacedLinks = $(Get-LinksFromHTML -htmlContent $htmlContent -title $relPage.title -includeImages $false)
     $FinalContents = $htmlContent
     try {
         if ($FinalContents.Length -gt $RunSummary.SetupInfo.HuduMaxContentLength) {
@@ -694,7 +717,7 @@ foreach ($id in $Article_Relinking.Keys) {
             $htmlPath = Join-Path $TmpOutputDir -ChildPath ("LargeDoc_{0}.html" -f (Get-SafeFilename ([IO.Path]::GetFileNameWithoutExtension($($relPage.title)))))
             Set-Content -Path $htmlPath -Value $FinalContents -Encoding UTF8
 
-            $htmlAttachment = New-HuduUpload -FilePath $htmlPath -record_id $id -record_type 'Article'
+            $htmlAttachment = New-HuduUpload -FilePath $htmlPath -record_id $articleId -record_type 'Article'
             $htmlAttachment = $htmlAttachment.upload ?? $htmlAttachment
 
             $htmlAttachmentFileRef = if (-not [string]::IsNullOrWhiteSpace($htmlAttachment.slug)) { $htmlAttachment.slug } else { $htmlAttachment.id }
@@ -707,8 +730,17 @@ foreach ($id in $Article_Relinking.Keys) {
             })
         }
 
-        $response = Set-HuduArticle -ArticleId $id -Content $FinalContents -Name $relPage.title
+        $finalLinks = @(Get-LinksFromHTML -htmlContent $FinalContents -title $relPage.title -includeImages $false)
+        $relPage.ReplacedLinksCount = @($finalLinks | Where-Object { $_ -ilike "*$HuduBaseURL*" }).Count
+        $relPage.ReplacedLinks = $null
+
+        $relPage.FinalHtmlPath = Save-MigrationHtmlContent -PageId $relPage.id -Title $relPage.title -Content $FinalContents -Suffix "final" -OutDir $TmpOutputDir
+        $Article_Relinking[$articleId].FinalContentPath = $relPage.FinalHtmlPath
+
+        $response = Set-HuduArticle -ArticleId $articleId -Content $FinalContents -Name $relPage.title
         $relPage.HuduArticle = $response.Article ?? $response
+        $Article_Relinking[$articleId].HuduArticle = $relPage.HuduArticle
+        $LinksReplacedCount += $relPage.ReplacedLinksCount
         PrintAndLog -Message "Updated article [$($relPage.title)] with length: $($FinalContents.Length)" -Color Cyan
     } catch {
         $ErrorInfo=@{
@@ -721,17 +753,24 @@ foreach ($id in $Article_Relinking.Keys) {
         $RunSummary.Errors.add($ErrorInfo)
         $RunSummary.JobInfo.ArticlesErrored+=1
         Write-ErrorObjectsToFile -name "finalarticle-$($relPage.title)" -ErrorObject $ErrorInfo
+        $htmlContent = $null
+        $FinalContents = $null
+        $finalLinks = $null
+        Invoke-MigrationMemoryCleanup
         continue
     }
 
-    $Article_Relinking[$id].content = $FinalContents
-
     $relPage | ConvertTo-Json -Depth 10 | Out-File "$TmpOutputDir\completed-page-$($relPage.title).json"
-    $AllReplacedLinks.Add($relPage.ReplacedLinks)
 
-    $completionPercentage = Get-PercentDone -Current ($PageIDX++) -Total $Article_Relinking.Count
+    $completionPercentage = Get-PercentDone -Current $PageIDX -Total $Article_Relinking.Count
     Write-Progress -Activity "Finalizing $($relPage.title)" -Status "$completionPercentage%" -PercentComplete $completionPercentage
 
+    $htmlContent = $null
+    $FinalContents = $null
+    $finalLinks = $null
+    if (($PageIDX % 25) -eq 0) {
+        Invoke-MigrationMemoryCleanup
+    }
 }
 
 # Final step - Wrap up
@@ -741,9 +780,9 @@ $Article_Relinking.GetEnumerator() |
     ConvertTo-Json -Depth 10 |
     Out-File "$TmpOutputDir\Article_Relinking.json"
 $RunSummary.SetupInfo.FinishedAt        = $(get-date)
-$RunSummary.JobInfo.LinksCreated        = $AllNewLinks.count
-$RunSummary.JobInfo.LinksReplaced       = $(($StubbedPages | ForEach-Object { Get-LinksFromHTML -htmlContent $_ -title "" -includeImages $true -suppressOutput $true } | Where-Object { $_ -ilike "*$HuduBaseURL*" }).count)
-$RunSummary.JobInfo.LinksFound          = $AllFoundLinks.count
+$RunSummary.JobInfo.LinksCreated        = $LinksCreatedCount
+$RunSummary.JobInfo.LinksReplaced       = $LinksReplacedCount
+$RunSummary.JobInfo.LinksFound          = $LinksFoundCount
 $RunSummary.SetupInfo.RunDuration       = $($RunSummary.SetupInfo.FinishedAt - $RunSummary.SetupInfo.StartedAt).ToString()
 $RunSummary.CompletedStates += "finished in $($RunSummary.SetupInfo.RunDuration)"
 $RunSummary.State="Finished"
