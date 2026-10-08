@@ -178,6 +178,433 @@ function Invoke-MigrationMemoryCleanup {
     [System.GC]::WaitForPendingFinalizers()
     [System.GC]::Collect()
 }
+
+function Get-MigrationDestinationBatchKey {
+    param([object]$Page)
+
+    if ($null -eq $Page -or $null -eq $Page.CompanyId -or [int]$Page.CompanyId -lt 1) {
+        return "global"
+    }
+
+    return "company-$($Page.CompanyId)"
+}
+
+function Get-MigrationDestinationBatchLabel {
+    param([object]$Page)
+
+    if ($null -eq $Page -or $null -eq $Page.CompanyId -or [int]$Page.CompanyId -lt 1) {
+        return "Global KB"
+    }
+
+    $companyName = $null
+    if ($script:all_companies) {
+        $companyName = @($script:all_companies | Where-Object { $_.Id -eq $Page.CompanyId } | Select-Object -First 1)[0].Name
+    }
+
+    if ([string]::IsNullOrWhiteSpace($companyName)) {
+        $companyName = "Company ID $($Page.CompanyId)"
+    }
+
+    return $companyName
+}
+
+function Get-MigrationDestinationBatches {
+    param([object[]]$Pages)
+
+    $batches = [System.Collections.ArrayList]@()
+    $lookup = @{}
+
+    foreach ($page in @($Pages | Where-Object { $null -ne $_ })) {
+        $key = Get-MigrationDestinationBatchKey -Page $page
+
+        if (-not $lookup.ContainsKey($key)) {
+            $batch = [PSCustomObject]@{
+                Key       = $key
+                Label     = Get-MigrationDestinationBatchLabel -Page $page
+                CompanyId = $page.CompanyId
+                Pages     = [System.Collections.ArrayList]@()
+            }
+            $lookup[$key] = $batch
+            [void]$batches.Add($batch)
+        }
+
+        [void]$lookup[$key].Pages.Add($page)
+    }
+
+    return $batches
+}
+
+function Get-MigrationArticleUrl {
+    param([object]$Entry)
+
+    if ($Entry -and $Entry.HuduArticle -and -not [string]::IsNullOrWhiteSpace($Entry.HuduArticle.url)) {
+        return $Entry.HuduArticle.url
+    }
+
+    if ($Entry -and $Entry.Page -and $Entry.Page.stub -and -not [string]::IsNullOrWhiteSpace($Entry.Page.stub.url)) {
+        return $Entry.Page.stub.url
+    }
+
+    return $null
+}
+
+function Get-MigrationRelinkCheckpointRows {
+    param([hashtable]$Relinking)
+
+    foreach ($articleId in @($Relinking.Keys)) {
+        $entry = $Relinking[$articleId]
+        $page = $entry.Page
+
+        [ordered]@{
+            ArticleId             = "$articleId"
+            HuduUrl               = Get-MigrationArticleUrl -Entry $entry
+            PageId                = $page.id
+            Title                 = $page.title
+            OriginalTitle         = $page.OriginalTitle
+            CompanyId             = $page.CompanyId
+            DestinationBatchKey   = $entry.DestinationBatchKey
+            DestinationBatchLabel = $entry.DestinationBatchLabel
+            ContentPath           = $entry.ContentPath
+            FinalContentPath      = $entry.FinalContentPath
+            LinkCount             = $entry.LinkCount
+            ReplacedLinksCount    = $page.ReplacedLinksCount
+        }
+    }
+}
+
+function Write-MigrationRelinkCheckpoint {
+    param(
+        [Parameter(Mandatory)][hashtable]$Relinking,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    @(Get-MigrationRelinkCheckpointRows -Relinking $Relinking) |
+        ConvertTo-Json -Depth 6 |
+        Out-File $Path
+}
+
+function Write-MigrationPageCheckpoint {
+    param(
+        [Parameter(Mandatory)][object]$Page,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    [ordered]@{
+        PageId             = $Page.id
+        Title              = $Page.title
+        OriginalTitle      = $Page.OriginalTitle
+        FullUrl            = $Page.FullUrl
+        SpaceKey           = $Page.SpaceKey
+        CompanyId          = $Page.CompanyId
+        StubArticleId      = $Page.stub.id
+        HuduArticleId      = $Page.HuduArticle.id
+        HuduUrl            = $Page.HuduArticle.url ?? $Page.stub.url
+        RawHtmlPath        = $Page.RawHtmlPath
+        PreparedHtmlPath   = $Page.PreparedHtmlPath
+        FinalHtmlPath      = $Page.FinalHtmlPath
+        LinksCount         = $Page.LinksCount
+        ReplacedLinksCount = $Page.ReplacedLinksCount
+        CharsTrimmed       = $Page.CharsTrimmed
+    } |
+        ConvertTo-Json -Depth 5 |
+        Out-File $Path
+}
+
+function Add-MigrationRelinkTitleKey {
+    param(
+        [Parameter(Mandatory)][hashtable]$TitleToEntries,
+        [AllowEmptyString()][string]$Title,
+        [Parameter(Mandatory)][object]$Entry
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Title)) { return }
+
+    $key = [System.Net.WebUtility]::HtmlDecode($Title).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($key)) { return }
+
+    if (-not $TitleToEntries.ContainsKey($key)) {
+        $TitleToEntries[$key] = [System.Collections.ArrayList]@()
+    }
+
+    if (@($TitleToEntries[$key] | Where-Object { $_ -eq $Entry }).Count -eq 0) {
+        [void]$TitleToEntries[$key].Add($Entry)
+    }
+}
+
+function New-MigrationRelinkIndex {
+    param([hashtable]$Relinking)
+
+    $pageIdToEntry = @{}
+    $titleToEntries = @{}
+
+    foreach ($entry in @($Relinking.Values)) {
+        $page = $entry.Page
+        if ($null -eq $page) { continue }
+
+        if (-not [string]::IsNullOrWhiteSpace($page.id)) {
+            $pageIdToEntry[[string]$page.id] = $entry
+        }
+
+        foreach ($title in @($page.OriginalTitle, $page.title, $entry.HuduArticle.name, $page.stub.name)) {
+            Add-MigrationRelinkTitleKey -TitleToEntries $titleToEntries -Title $title -Entry $entry
+        }
+    }
+
+    return [PSCustomObject]@{
+        PageIdToEntry  = $pageIdToEntry
+        TitleToEntries = $titleToEntries
+    }
+}
+
+function Get-ConfluencePageReferenceCandidates {
+    param([AllowEmptyString()][string]$Html)
+
+    $ids = [ordered]@{}
+    $titles = [ordered]@{}
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+        return [PSCustomObject]@{ PageIds = @(); Titles = @() }
+    }
+
+    foreach ($pattern in @(
+        'ri:content-id=["''](\d+)["'']',
+        '\b(?:content|pages?)/(\d+)\b',
+        '\bpageId[=?](\d+)\b',
+        '/pages/(\d+)(?:/|$)'
+    )) {
+        foreach ($match in [regex]::Matches($Html, $pattern, 'IgnoreCase')) {
+            $value = $match.Groups[1].Value
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                $ids[$value] = $true
+            }
+        }
+    }
+
+    foreach ($pattern in @(
+        'ri:page\b[^>]*ri:content-title=["'']([^"'']+)["'']',
+        'ri:content-title=["'']([^"'']+)["'']'
+    )) {
+        foreach ($match in [regex]::Matches($Html, $pattern, 'IgnoreCase')) {
+            $value = [System.Net.WebUtility]::HtmlDecode($match.Groups[1].Value).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                $titles[$value] = $true
+            }
+        }
+    }
+
+    return [PSCustomObject]@{
+        PageIds = @($ids.Keys)
+        Titles  = @($titles.Keys)
+    }
+}
+
+function Resolve-MigrationHuduUrlForConfluenceReference {
+    param(
+        [AllowEmptyString()][string]$Reference,
+        [hashtable]$PageIdToRelinkEntry = @{},
+        [hashtable]$UrlMap = @{},
+        [string]$ConfluenceDomain,
+        [string]$ConfluenceDomainBase,
+        [string]$ConfluenceBaseUrl
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Reference)) { return $null }
+
+    $candidateSet = [ordered]@{}
+    function Add-Candidate {
+        param([AllowEmptyString()][string]$Value)
+        if ([string]::IsNullOrWhiteSpace($Value)) { return }
+        $clean = $Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($clean)) { return }
+        $candidateSet[$clean] = $true
+    }
+
+    Add-Candidate $Reference
+    Add-Candidate ([System.Net.WebUtility]::HtmlDecode($Reference))
+
+    try {
+        Add-Candidate ([uri]::UnescapeDataString($Reference))
+    } catch {}
+
+    foreach ($candidate in @($candidateSet.Keys)) {
+        if ($candidate.StartsWith('/wiki', [System.StringComparison]::OrdinalIgnoreCase)) {
+            Add-Candidate "$ConfluenceDomainBase$candidate"
+        } elseif ($candidate.StartsWith('/', [System.StringComparison]::OrdinalIgnoreCase)) {
+            Add-Candidate "$ConfluenceBaseUrl$candidate"
+            Add-Candidate "$ConfluenceDomainBase$candidate"
+        } elseif ($candidate.StartsWith('wiki/', [System.StringComparison]::OrdinalIgnoreCase)) {
+            Add-Candidate "$ConfluenceDomainBase/$candidate"
+        }
+    }
+
+    foreach ($candidate in @($candidateSet.Keys)) {
+        if ($UrlMap.ContainsKey($candidate)) {
+            return $UrlMap[$candidate]
+        }
+    }
+
+    foreach ($candidate in @($candidateSet.Keys)) {
+        $id = $null
+        foreach ($pattern in @(
+            '\b(?:content|pages?)/(\d+)\b',
+            '\bpageId[=?](\d+)\b',
+            '/pages/(\d+)(?:/|$)'
+        )) {
+            if ($candidate -match $pattern) {
+                $id = $Matches[1]
+                break
+            }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($id) -and $PageIdToRelinkEntry.ContainsKey([string]$id)) {
+            return Get-MigrationArticleUrl -Entry $PageIdToRelinkEntry[[string]$id]
+        }
+    }
+
+    return $null
+}
+
+function Get-MigrationTitleRelinkTargets {
+    param(
+        [object]$Entry,
+        [object]$RelinkIndex,
+        [bool]$RelinkAllTitleText = $false
+    )
+
+    $targets = [System.Collections.ArrayList]@()
+    $seen = @{}
+
+    function Add-Target {
+        param([object]$TargetEntry)
+        if ($null -eq $TargetEntry) { return }
+        $url = Get-MigrationArticleUrl -Entry $TargetEntry
+        if ([string]::IsNullOrWhiteSpace($url)) { return }
+        if (-not $seen.ContainsKey($url)) {
+            $seen[$url] = $true
+            [void]$targets.Add($TargetEntry)
+        }
+    }
+
+    if ($RelinkAllTitleText) {
+        foreach ($targetEntry in @($RelinkIndex.PageIdToEntry.Values)) {
+            Add-Target -TargetEntry $targetEntry
+        }
+        return $targets
+    }
+
+    $rawHtml = Get-MigrationPageHtmlContent -Page $Entry.Page -Path $Entry.Page.RawHtmlPath -Default ''
+    $candidates = Get-ConfluencePageReferenceCandidates -Html $rawHtml
+
+    foreach ($pageId in @($candidates.PageIds)) {
+        if ($RelinkIndex.PageIdToEntry.ContainsKey([string]$pageId)) {
+            Add-Target -TargetEntry $RelinkIndex.PageIdToEntry[[string]$pageId]
+        }
+    }
+
+    foreach ($title in @($candidates.Titles)) {
+        $key = [System.Net.WebUtility]::HtmlDecode($title).Trim().ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($key) -or -not $RelinkIndex.TitleToEntries.ContainsKey($key)) {
+            continue
+        }
+
+        $matches = @($RelinkIndex.TitleToEntries[$key])
+        if ($matches.Count -eq 1) {
+            Add-Target -TargetEntry $matches[0]
+        }
+    }
+
+    return $targets
+}
+
+function Invoke-ConfluenceHtmlRelink {
+    param(
+        [AllowEmptyString()][string]$Html,
+        [Parameter(Mandatory)][object]$Entry,
+        [Parameter(Mandatory)][object]$RelinkIndex,
+        [Parameter(Mandatory)][hashtable]$UrlMap,
+        [Parameter(Mandatory)][string]$ConfluenceDomain,
+        [Parameter(Mandatory)][string]$ConfluenceDomainBase,
+        [Parameter(Mandatory)][string]$ConfluenceBaseUrl,
+        [bool]$RelinkReferencedTitleText = $true,
+        [bool]$RelinkAllTitleText = $false
+    )
+
+    if ($null -eq $Html) { $Html = '' }
+    $stats = @{ Replacements = 0 }
+
+    $urlPattern = '(?:https?://' + [regex]::Escape($ConfluenceDomain) + '\.atlassian\.net)?/wiki/[^"''\s<>]+|https?://' + [regex]::Escape($ConfluenceDomain) + '\.atlassian\.net/[^"''\s<>]+'
+    $Html = [regex]::Replace($Html, $urlPattern, {
+        param($match)
+        $replacement = Resolve-MigrationHuduUrlForConfluenceReference `
+            -Reference $match.Value `
+            -PageIdToRelinkEntry $RelinkIndex.PageIdToEntry `
+            -UrlMap $UrlMap `
+            -ConfluenceDomain $ConfluenceDomain `
+            -ConfluenceDomainBase $ConfluenceDomainBase `
+            -ConfluenceBaseUrl $ConfluenceBaseUrl
+
+        if (-not [string]::IsNullOrWhiteSpace($replacement)) {
+            $stats.Replacements += 1
+            return $replacement
+        }
+
+        return $match.Value
+    }, 'IgnoreCase')
+
+    foreach ($pattern in @('\b(?:content|pages?)/(\d+)\b', '\bpageId[=?](\d+)\b')) {
+        $Html = [regex]::Replace($Html, $pattern, {
+            param($match)
+            $matchedId = $match.Groups[1].Value
+            if (-not [string]::IsNullOrWhiteSpace($matchedId) -and $RelinkIndex.PageIdToEntry.ContainsKey([string]$matchedId)) {
+                $replacement = Get-MigrationArticleUrl -Entry $RelinkIndex.PageIdToEntry[[string]$matchedId]
+                if (-not [string]::IsNullOrWhiteSpace($replacement)) {
+                    $stats.Replacements += 1
+                    return $replacement
+                }
+            }
+
+            return $match.Value
+        }, 'IgnoreCase')
+    }
+
+    if ($RelinkReferencedTitleText -or $RelinkAllTitleText) {
+        $titleTargets = @(Get-MigrationTitleRelinkTargets -Entry $Entry -RelinkIndex $RelinkIndex -RelinkAllTitleText $RelinkAllTitleText)
+        $protectedHtmlPattern = '(<a\b[^>]*>.*?</a>|<[^>]+>)'
+        $protectedHtmlOptions = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+                                [System.Text.RegularExpressions.RegexOptions]::Singleline
+
+        foreach ($targetEntry in $titleTargets) {
+            $huduUrl = Get-MigrationArticleUrl -Entry $targetEntry
+            if ([string]::IsNullOrWhiteSpace($huduUrl)) { continue }
+
+            foreach ($title in (@($targetEntry.Page.OriginalTitle, $targetEntry.Page.title) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)) {
+                if ($Html.IndexOf($title, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+
+                $parts = [regex]::Split($Html, $protectedHtmlPattern, $protectedHtmlOptions)
+                for ($i = 0; $i -lt $parts.Count; $i++) {
+                    $part = $parts[$i]
+                    if ([string]::IsNullOrEmpty($part) -or [regex]::IsMatch($part, '^' + $protectedHtmlPattern + '$', $protectedHtmlOptions)) {
+                        continue
+                    }
+
+                    $parts[$i] = [regex]::Replace($part, [regex]::Escape($title), {
+                        param($match)
+                        $stats.Replacements += 1
+                        return "<a href='$huduUrl'>$($match.Value)</a>"
+                    }, 'IgnoreCase')
+                }
+
+                $Html = $parts -join ''
+            }
+        }
+    }
+
+    return [PSCustomObject]@{
+        Html             = $Html
+        ReplacementCount = $stats.Replacements
+    }
+}
+
 function Get-PercentDone {
     param (
         [int]$Current,
@@ -632,7 +1059,14 @@ function Start-RunSummary {
         NonInteractive      = $NonInteractive
         TableExportEnabled  = $ExportConfluenceTables
         TableExportSchemaMatchThreshold = $ConfluenceTableSchemaMatchThreshold
+        TableExportTitleGrouping = $ConfluenceTableTitleGrouping
+        TableExportTitleMatchThreshold = $ConfluenceTableTitleMatchThreshold
         SkipArchivedConfluenceContent = $SkipArchivedConfluenceContent
+        RelinkReferencedTitleText = $RelinkReferencedTitleText
+        RelinkAllTitleText = $RelinkAllTitleText
+        ConfluenceRequestMaxRetries = $ConfluenceRequestMaxRetries
+        ConfluenceRequestInitialDelaySeconds = $ConfluenceRequestInitialDelaySeconds
+        ConfluenceRequestMaxDelaySeconds = $ConfluenceRequestMaxDelaySeconds
         StartedAt           = $(get-date)
         FinishedAt          = $null
         RunDuration         = $null

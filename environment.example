@@ -3,12 +3,13 @@ $ConfluenceDomain = "yoururl.atlassian.net" #'hudu-integrations' would be valid 
 $Confluence_Username = "confluence-email@tld.net"
 $HuduBaseURL = "https://yoururlhere"
 $HuduAPIKey = ""
-$SkipArchivedConfluenceContent = $true # skips Confluence pages whose API status is not current
-$userDataDir = $psscriptroot # fully qualified path to store data and logs (you can leave as-is for local dir)
 
 ## advanced + noninteractive options
+$userDataDir = $psscriptroot # fully qualified path to store data and logs (you can leave as-is for local dir)
+$SkipArchivedConfluenceContent = $true # skips Confluence pages whose API status is not current
 $ExportConfluenceTables = $false # or set $env:CONFLUENCE_EXPORT_TABLES = "true"
 $ConfluenceTableSchemaMatchThreshold = 0.86
+$ConfluenceTableTitleMatchThreshold = 0.74 # lower merges more title/category matches, higher keeps more separate
 
 $noninteractive = $false # set to true if you want to avoid prompts
 $preselectedSourceStrategy = $null # set to 1 if you would like all spaces, 0 for single-space
