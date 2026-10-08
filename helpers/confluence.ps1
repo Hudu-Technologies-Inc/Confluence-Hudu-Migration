@@ -27,13 +27,12 @@ function Initialize-ConfluenceSourcePage {
     $Page | Add-Member -NotePropertyName FinalHtmlPath    -NotePropertyValue $null -Force
     $Page | Add-Member -NotePropertyName htmlContent      -NotePropertyValue $null -Force
     $Page | Add-Member -NotePropertyName rawContent       -NotePropertyValue $null -Force
-    $Page | Add-Member -NotePropertyName articlePreview   -NotePropertyValue $(Get-ArticlePreviewBlock -Title $Page.title -PageId $Page.id -Content $rawHtml -MaxLength $RunSummary.SetupInfo.PreviewLength) -Force
+    $Page | Add-Member -NotePropertyName articlePreview   -NotePropertyValue $null -Force
 
-    $extractedLinks = @(Get-LinksFromHTML -htmlContent $rawHtml -title $Page.title -includeImages $false)
     $Page | Add-Member -NotePropertyName Links      -NotePropertyValue $null -Force
-    $Page | Add-Member -NotePropertyName LinksCount -NotePropertyValue $extractedLinks.Count -Force
+    $Page | Add-Member -NotePropertyName LinksCount -NotePropertyValue 0 -Force
     $Page | Add-Member -NotePropertyName BaseLinks  -NotePropertyValue $(Get-ConfluenceLinks -page $Page) -Force
-    $script:LinksFoundCount += @($Page.BaseLinks).Count + $extractedLinks.Count
+    $script:LinksFoundCount += @($Page.BaseLinks).Count
 
     $Page | Add-Member -NotePropertyName stub          -NotePropertyValue $null -Force
     $Page | Add-Member -NotePropertyName updatedHtml   -NotePropertyValue $null -Force
@@ -46,17 +45,12 @@ function Initialize-ConfluenceSourcePage {
     $attachments = Get-AttachmentsForPage -baseUrl $ConfluenceBaseUrl -pageId $Page.id -authHeader "Basic $encodedCreds"
     $Page | Add-Member -NotePropertyName attachments -NotePropertyValue $attachments -Force
 
-    write-host "page: $Page from space $($Page.SpaceKey ?? $Page.space.key)"
-    $attachidx=0
     foreach ($attachment in $Page.attachments) {
-        $attachidx=$attachidx+1
         $RunSummary.JobInfo.AttachmentsFound+=1
-        write-host "    attachment $attachidx- $attachment"
     }
 
     Clear-MigrationPageHtmlMemory -Page $Page
     $rawHtml = $null
-    $extractedLinks = $null
     return $Page
 }
 
@@ -599,7 +593,7 @@ function Invoke-MigrationPageContentPreparation {
     PrintAndLog -Message "Removed $($Page.charsTrimmed) characters of bloat from $($Page.title)" -Color Green
     $Page.PreparedHtmlPath = Save-MigrationHtmlContent -PageId $Page.id -Title $Page.title -Content $updatedHtml -Suffix "after" -OutDir $TmpOutputDir
     Write-Host "Saved HTML snapshot: $($Page.PreparedHtmlPath)"
-    PrintAndLog "Prepared Article: $($Page.articlePreview) to $($($Page.CompanyId) ?? 'Global KB') with attachment links converted. Final content update is deferred until relinking." -Color Green
+    PrintAndLog "Prepared Article: $($Page.title) to $($($Page.CompanyId) ?? 'Global KB') with attachment links converted. Final content update is deferred until relinking." -Color Green
 
     $rawContent = $null
     $updatedHtml = $null
@@ -626,6 +620,10 @@ function Invoke-MigrationPageRelinkAndFinalize {
 
     try {
         $htmlContent = Get-MigrationPageHtmlContent -Page $relPage -Path $Entry.ContentPath -Default "unknown contents"
+        $sourceLinks = @(Get-LinksFromHTML -htmlContent $htmlContent -title $relPage.title -includeImages $false -suppressOutput $true)
+        $relPage.LinksCount = $sourceLinks.Count
+        $script:LinksFoundCount += $sourceLinks.Count
+
         $relinkResult = Invoke-ConfluenceHtmlRelink `
             -Html $htmlContent `
             -Entry $Entry `
@@ -687,6 +685,7 @@ function Invoke-MigrationPageRelinkAndFinalize {
         $htmlContent = $null
         $FinalContents = $null
         $finalLinks = $null
+        $sourceLinks = $null
     }
 }
 
@@ -1417,6 +1416,100 @@ function Get-ConfluenceTableHeaderKey {
     return $value
 }
 
+function Test-ConfluenceTableCellLooksLikeData {
+    param([string]$Text)
+
+    $value = Normalize-ConfluenceTableCellText -Text $Text
+    if ([string]::IsNullOrWhiteSpace($value)) { return $false }
+
+    if ($value.Length -gt 64) { return $true }
+    if ($value -match '(?i)\bhttps?://|www\.|@[\w.-]+\.[a-z]{2,}\b') { return $true }
+    if ($value -match '\b(?:\d{1,3}\.){3}\d{1,3}\b') { return $true }
+    if ($value -match '(?i)\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b') { return $true }
+    if ($value -match '\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b') { return $true }
+    if ($value -match '\b\d{3}[-.)\s]?\d{3}[-.\s]?\d{4}\b') { return $true }
+    if ($value -match '(?i)\b\d+\s+[a-z0-9 .#-]+(?:st|street|ave|avenue|rd|road|dr|drive|blvd|boulevard|ln|lane|ct|court|terrace|pkwy|parkway|hwy|highway|suite|ste|unit)\b') { return $true }
+    if ($value -match '\b[A-Z0-9]{4,}(?:-[A-Z0-9]{4,}){1,}\b') { return $true }
+    if ($value -match '^\$?\d+(?:,\d{3})*(?:\.\d+)?%?$') { return $true }
+
+    return $false
+}
+
+function Test-ConfluenceTableCellHasHeaderKeyword {
+    param([string]$Text)
+
+    $key = Get-ConfluenceTableHeaderKey -Header $Text
+    if ([string]::IsNullOrWhiteSpace($key)) { return $false }
+
+    $headerTokens = @(
+        'name','role','contact','phone','email','user','username','computer','pc','hostname',
+        'server','service','description','time','duration','setting','property','value',
+        'ip','address','mac','port','internal','external','product','key','license',
+        'serial','version','installed','notes','note','printer','provider','device',
+        'function','location','login','date','type','quantity','qty','status','technician',
+        'subnet','vlan','purpose','wan','lan','gateway','dns','model','make','warranty',
+        'account','expires','expiration','coverage','start','end','path','letter'
+    )
+
+    foreach ($token in $headerTokens) {
+        if ($key -match "(^|_)$([regex]::Escape($token))(_|$)") {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Test-ConfluenceTableCellLooksLikeHeader {
+    param([string]$Text)
+
+    $value = Normalize-ConfluenceTableCellText -Text $Text
+    if ([string]::IsNullOrWhiteSpace($value)) { return $false }
+    if ($value.Length -gt 48) { return $false }
+    if ($value -notmatch '[A-Za-z]') { return $false }
+    if (Test-ConfluenceTableCellLooksLikeData -Text $value) { return $false }
+
+    $wordCount = @($value -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+    if ($wordCount -gt 7) { return $false }
+
+    return $true
+}
+
+function Test-ConfluenceTableFirstRowLooksLikeHeader {
+    param([object[]]$Rows)
+
+    if ($Rows.Count -lt 2) { return $false }
+
+    $firstCells = @($Rows[0].Cells)
+    $nonBlank = @($firstCells | Where-Object { -not [string]::IsNullOrWhiteSpace((Normalize-ConfluenceTableCellText -Text $_)) })
+    if ($nonBlank.Count -lt 2) { return $false }
+
+    if ($firstCells.Count -eq 2) {
+        $firstHasHeaderKeyword = Test-ConfluenceTableCellHasHeaderKeyword -Text $firstCells[0]
+        $secondHasHeaderKeyword = Test-ConfluenceTableCellHasHeaderKeyword -Text $firstCells[1]
+        $secondIsHeaderWord = Test-ConfluenceTableCellLooksLikeHeader -Text $firstCells[1]
+        if ($firstHasHeaderKeyword -and -not $secondHasHeaderKeyword -and -not ($secondIsHeaderWord -and $firstCells[1] -match '(?i)^(value|description|notes?|detail|setting|property)$')) {
+            return $false
+        }
+    }
+
+    $headerLikeCount = @($nonBlank | Where-Object { Test-ConfluenceTableCellLooksLikeHeader -Text $_ }).Count
+    $dataLikeCount = @($nonBlank | Where-Object { Test-ConfluenceTableCellLooksLikeData -Text $_ }).Count
+    $keywordCount = @($nonBlank | Where-Object { Test-ConfluenceTableCellHasHeaderKeyword -Text $_ }).Count
+
+    $headerRatio = $headerLikeCount / $nonBlank.Count
+    $maxDataCells = [Math]::Max(1, [Math]::Floor($nonBlank.Count * 0.34))
+
+    if ($headerRatio -lt 0.60 -or $dataLikeCount -gt $maxDataCells) {
+        return $false
+    }
+
+    $secondCells = @($Rows[1].Cells | Where-Object { -not [string]::IsNullOrWhiteSpace((Normalize-ConfluenceTableCellText -Text $_)) })
+    $secondDataLikeCount = @($secondCells | Where-Object { Test-ConfluenceTableCellLooksLikeData -Text $_ }).Count
+
+    return ($keywordCount -ge 2 -or $secondDataLikeCount -gt $dataLikeCount)
+}
+
 function Get-UniqueConfluenceTableHeaders {
     param(
         [string[]]$Headers,
@@ -1619,17 +1712,26 @@ function Convert-ConfluenceHtmlTableToModel {
         }
     }
 
-    $headerRowCount = 0
+    $explicitHeaderRowCount = 0
     for ($i = 0; $i -lt $rows.Count; $i++) {
         if ($rows[$i].HasHeader) {
-            $headerRowCount++
+            $explicitHeaderRowCount++
         } else {
             break
         }
     }
 
-    if ($headerRowCount -eq 0 -and $rows.Count -gt 1) {
+    $headerRowCount = $explicitHeaderRowCount
+    $headerSource = "ExplicitTh"
+    $headerConfidence = 1.0
+
+    if ($headerRowCount -eq 0 -and (Test-ConfluenceTableFirstRowLooksLikeHeader -Rows @($rows))) {
         $headerRowCount = 1
+        $headerSource = "InferredFirstRow"
+        $headerConfidence = 0.72
+    } elseif ($headerRowCount -eq 0) {
+        $headerSource = "Generated"
+        $headerConfidence = 0.15
     }
 
     $rawHeaders = @()
@@ -1643,7 +1745,13 @@ function Convert-ConfluenceHtmlTableToModel {
         }
 
         if ($parts.Count -eq 0) {
-            $rawHeaders += "Column$($column + 1)"
+            if ($headerSource -eq "Generated" -and $maxColumnCount -eq 2) {
+                $rawHeaders += @("Field", "Value")[$column]
+            } elseif ($headerSource -eq "Generated" -and $maxColumnCount -eq 1) {
+                $rawHeaders += "Value"
+            } else {
+                $rawHeaders += "Column$($column + 1)"
+            }
         } else {
             $rawHeaders += ($parts -join ' - ')
         }
@@ -1654,6 +1762,12 @@ function Convert-ConfluenceHtmlTableToModel {
         [void]$dataRows.Add($rows[$rowIndex].Cells)
     }
 
+    $sampleText = (
+        @($rows | Select-Object -First 4 | ForEach-Object { $_.Cells }) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace((Normalize-ConfluenceTableCellText -Text $_)) } |
+            Select-Object -First 24
+    ) -join ' '
+
     $metadataHeaders = @('CompanyId','CompanyName','SpaceKey','SpaceName','PageId','PageTitle','PageUrl','TableIndex','RowIndex')
     $headers = Get-UniqueConfluenceTableHeaders -Headers $rawHeaders -ReservedHeaders $metadataHeaders
     $headerKeys = @($headers | ForEach-Object { Get-ConfluenceTableHeaderKey -Header $_ })
@@ -1663,9 +1777,12 @@ function Convert-ConfluenceHtmlTableToModel {
         Headers        = @($headers)
         HeaderKeys     = @($headerKeys)
         HeaderRowCount = $headerRowCount
+        HeaderSource   = $headerSource
+        HeaderConfidence = $headerConfidence
         DataRows       = $dataRows
         ColumnCount    = $maxColumnCount
         RowCount       = $rows.Count
+        SampleText     = $sampleText
     }
 }
 
@@ -1676,52 +1793,294 @@ function Measure-ConfluenceTableHeaderSimilarity {
     )
 
     if ($Left.Count -eq 0 -or $Right.Count -eq 0) { return 0.0 }
-    if ($Left.Count -ne $Right.Count) { return 0.0 }
 
     $positionMatches = 0
-    for ($i = 0; $i -lt $Left.Count; $i++) {
+    $maxCount = [Math]::Max($Left.Count, $Right.Count)
+    $minCount = [Math]::Min($Left.Count, $Right.Count)
+    for ($i = 0; $i -lt $minCount; $i++) {
         if ($Left[$i] -eq $Right[$i]) {
             $positionMatches++
         }
     }
-    $positionScore = $positionMatches / $Left.Count
+    $positionScore = $positionMatches / $maxCount
+    $countScore = $minCount / $maxCount
 
     $leftTokens = @($Left | ForEach-Object { $_ -split '_' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
     $rightTokens = @($Right | ForEach-Object { $_ -split '_' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
     $union = @($leftTokens + $rightTokens | Sort-Object -Unique)
-    if ($union.Count -eq 0) { return $positionScore }
+    if ($union.Count -eq 0) { return [Math]::Round((0.8 * $positionScore) + (0.2 * $countScore), 4) }
 
     $intersection = @($leftTokens | Where-Object { $rightTokens -contains $_ })
     $tokenScore = $intersection.Count / $union.Count
 
-    return [Math]::Round((0.7 * $positionScore) + (0.3 * $tokenScore), 4)
+    return [Math]::Round((0.45 * $positionScore) + (0.40 * $tokenScore) + (0.15 * $countScore), 4)
+}
+
+function Get-ConfluenceTableTextTokens {
+    param([string]$Text)
+
+    $value = (Normalize-ConfluenceTableCellText -Text $Text).ToLowerInvariant()
+    $value = $value -replace '[^a-z0-9]+', ' '
+
+    $stopWords = @{
+        'a'=$true; 'an'=$true; 'and'=$true; 'are'=$true; 'as'=$true; 'at'=$true; 'by'=$true
+        'for'=$true; 'from'=$true; 'in'=$true; 'into'=$true; 'is'=$true; 'it'=$true
+        'of'=$true; 'on'=$true; 'or'=$true; 'the'=$true; 'to'=$true; 'with'=$true
+        'inc'=$true; 'llc'=$true; 'ltd'=$true; 'corp'=$true; 'corporation'=$true
+        'company'=$true; 'co'=$true; 'client'=$true; 'customer'=$true; 'kb'=$true
+        'page'=$true; 'pages'=$true; 'article'=$true; 'articles'=$true; 'info'=$true
+        'information'=$true; 'old'=$true; 'new'=$true; 'current'=$true
+    }
+
+    $synonyms = @{
+        'pcs'='computer'; 'pc'='computer'; 'workstation'='computer'; 'workstations'='computer'
+        'laptop'='computer'; 'laptops'='computer'; 'desktop'='computer'; 'desktops'='computer'
+        'computers'='computer'; 'licenses'='license'; 'licensing'='license'; 'licensed'='license'
+        'keys'='key'; 'serials'='serial'; 'users'='user'; 'devices'='device'; 'printers'='printer'
+        'servers'='server'; 'vlans'='vlan'; 'subnets'='subnet'; 'addresses'='address'
+        'locations'='location'; 'providers'='provider'; 'circuits'='circuit'
+    }
+
+    $tokens = [System.Collections.ArrayList]@()
+    foreach ($token in @($value -split '\s+')) {
+        if ([string]::IsNullOrWhiteSpace($token)) { continue }
+        if ($token.Length -lt 2) { continue }
+        if ($token -match '^\d+$') { continue }
+        if ($stopWords.ContainsKey($token)) { continue }
+        if ($synonyms.ContainsKey($token)) { $token = $synonyms[$token] }
+        if (-not $tokens.Contains($token)) {
+            [void]$tokens.Add($token)
+        }
+    }
+
+    return @($tokens)
+}
+
+function Remove-ConfluenceTableOrganizationText {
+    param(
+        [string]$Text,
+        [object]$Page,
+        [object]$PageAttribution,
+        [object[]]$Companies = @()
+    )
+
+    $clean = Normalize-ConfluenceTableCellText -Text $Text
+    if ([string]::IsNullOrWhiteSpace($clean)) { return "" }
+
+    $orgNames = [System.Collections.ArrayList]@()
+    foreach ($candidate in @($Page.SpaceName, $Page.SpaceKey, $PageAttribution.CompanyName)) {
+        if (-not [string]::IsNullOrWhiteSpace("$candidate") -and "$candidate".Length -gt 2) {
+            [void]$orgNames.Add("$candidate")
+        }
+    }
+
+    foreach ($company in @($Companies | Where-Object { $null -ne $_ })) {
+        if (-not [string]::IsNullOrWhiteSpace($company.Name) -and $company.Name.Length -gt 4) {
+            [void]$orgNames.Add($company.Name)
+        }
+    }
+
+    foreach ($orgName in @($orgNames | Sort-Object Length -Descending -Unique)) {
+        $clean = [regex]::Replace($clean, [regex]::Escape($orgName), ' ', 'IgnoreCase')
+    }
+
+    $clean = [regex]::Replace($clean, '(?i)\b(incorporated|inc|llc|ltd|corp|corporation|company|co)\b\.?', ' ')
+    $clean = [regex]::Replace($clean, '\s+', ' ')
+    return $clean.Trim()
+}
+
+function Get-ConfluenceTableTitleGroup {
+    param(
+        [Parameter(Mandatory)][object]$Page,
+        [Parameter(Mandatory)][object]$Model,
+        [object]$PageAttribution,
+        [object[]]$Companies = @(),
+        [bool]$Enabled = $true
+    )
+
+    if (-not $Enabled) {
+        return [PSCustomObject]@{ Key = $null; Name = $null; Score = 0.0; Tokens = @(); Source = "Disabled" }
+    }
+
+    $pageTitle = Remove-ConfluenceTableOrganizationText -Text ($Page.OriginalTitle ?? $Page.title) -Page $Page -PageAttribution $PageAttribution -Companies $Companies
+    $headerText = @($Model.Headers) -join ' '
+    $sampleText = $Model.SampleText ?? ''
+    $titleLower = $pageTitle.ToLowerInvariant()
+    $combinedLower = "$pageTitle $headerText $sampleText".ToLowerInvariant()
+
+    function New-TableTitleGroup {
+        param([string]$Key, [string]$Name, [double]$Score, [string]$Source)
+        $tokens = Get-ConfluenceTableTextTokens -Text $pageTitle
+        return [PSCustomObject]@{
+            Key    = $Key
+            Name   = $Name
+            Score  = $Score
+            Tokens = @($tokens)
+            Source = $Source
+        }
+    }
+
+    function Test-TableCategory {
+        param([string]$Pattern, [string]$NegativePattern = $null)
+        if (-not [string]::IsNullOrWhiteSpace($NegativePattern) -and $combinedLower -match $NegativePattern) { return $false }
+        return $combinedLower -match $Pattern
+    }
+
+    $titleScore = 0.86
+    $mixedScore = 0.70
+
+    if (Test-TableCategory -Pattern '(office|physical|mailing|shipping|billing|site|location).{0,24}address|address.{0,24}(office|physical|mailing|shipping|billing|site|location)' -NegativePattern '\b(ip|mac|network|external|internal|wan|lan)\s+address') { return New-TableTitleGroup -Key 'office_locations' -Name 'Office Locations' -Score $titleScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(o365|office\s*365|microsoft\s*365|msft|exchange|mailbox|tenant)\b') { return New-TableTitleGroup -Key 'microsoft_365' -Name 'Microsoft 365' -Score $titleScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(requirement|requirements|user\s+story|project|status|current\s+step|epic|target\s+release)\b') { return New-TableTitleGroup -Key 'projects' -Name 'Projects and Requirements' -Score $titleScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(retired|retirement|decommission|disposed)\b') { return New-TableTitleGroup -Key 'retired_assets' -Name 'Retired Assets' -Score $titleScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(backup|backups|veeam|job|duration|reboot\s+time)\b') { return New-TableTitleGroup -Key 'backup_jobs' -Name 'Backups and Jobs' -Score $mixedScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(product\s+key|license|licence|licensing|activation|registration|redemption|serial|installed\s+on|software|product\s+#|product\s+number|cd\s*key)\b') { return New-TableTitleGroup -Key 'software_licenses' -Name 'Software Licenses' -Score $titleScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(provider|internet|isp|circuit|fiber|dsl|broadband|comcast|spectrum|at&t|att|google\s+fiber|centurylink|windstream|hypercore|skypan|skspan|ralk|wan\s+1|wan\s+2)\b') { return New-TableTitleGroup -Key 'internet_circuits' -Name 'Internet Circuits' -Score $titleScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(vlan|vlans)\b') { return New-TableTitleGroup -Key 'vlans' -Name 'VLANs' -Score $titleScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(port\s+forward|forwarding|external\s+port|internal\s+port|nat|firewall\s+rule)\b') { return New-TableTitleGroup -Key 'port_forwards' -Name 'Port Forwards' -Score $titleScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(wifi|wi-fi|wireless|ssid|wpa|passphrase)\b') { return New-TableTitleGroup -Key 'wireless' -Name 'Wireless' -Score $titleScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(printer|copier|scanner|print\s+queue)\b') { return New-TableTitleGroup -Key 'printers' -Name 'Printers' -Score $titleScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(switch|switches|switch\s+name)\b') { return New-TableTitleGroup -Key 'switches' -Name 'Switches' -Score $titleScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(firewall|router|sonicwall|fortinet|meraki|ubiquiti|unifi|network\s+device)\b') { return New-TableTitleGroup -Key 'network_devices' -Name 'Network Devices' -Score $mixedScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(ip\s+scheme|ip\s+address|subnet|dhcp|dns|gateway|static\s+ip|mac\s+address|network\s+address|accessible\s+range)\b') { return New-TableTitleGroup -Key 'network_ip' -Name 'Network IPs and Subnets' -Score $mixedScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(server|servers|hyper-v|vmware|domain\s+controller|cpu|ram|disk)\b') { return New-TableTitleGroup -Key 'servers' -Name 'Servers' -Score $mixedScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(hostname|computer|pc|workstation|laptop|desktop|make[_\s/]*model|warranty|asset)\b') { return New-TableTitleGroup -Key 'computers' -Name 'Computers' -Score $mixedScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(contact|contacts|role|phone|email|staff|employee)\b') { return New-TableTitleGroup -Key 'contacts' -Name 'Contacts' -Score $mixedScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(vendor|supplier|support\s+options|licensed\s+with|spam\s+filter)\b') { return New-TableTitleGroup -Key 'vendors' -Name 'Vendors' -Score $mixedScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(login|password|secret|credential|account|admin)\b') { return New-TableTitleGroup -Key 'credentials_access' -Name 'Credentials and Access' -Score $mixedScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(path|drive\s+letter|mapped\s+drive|share|unc)\b') { return New-TableTitleGroup -Key 'shares_paths' -Name 'Shares and Paths' -Score $mixedScore -Source 'Keyword' }
+    if (Test-TableCategory -Pattern '\b(voip|phone|extension|did|voice)\b') { return New-TableTitleGroup -Key 'phones_voice' -Name 'Phones and Voice' -Score $mixedScore -Source 'Keyword' }
+
+    $tokens = @(Get-ConfluenceTableTextTokens -Text $pageTitle | Select-Object -First 3)
+    if ($tokens.Count -gt 0) {
+        $name = ($tokens | ForEach-Object { (Get-Culture).TextInfo.ToTitleCase($_) }) -join ' '
+        return [PSCustomObject]@{
+            Key    = "title_$($tokens -join '_')"
+            Name   = "Title - $name"
+            Score  = 0.46
+            Tokens = $tokens
+            Source = "TitleTokens"
+        }
+    }
+
+    return [PSCustomObject]@{ Key = $null; Name = $null; Score = 0.0; Tokens = @(); Source = "None" }
 }
 
 function Get-ConfluenceTableGroup {
     param(
         [System.Collections.ArrayList]$Groups,
-        [string[]]$HeaderKeys,
-        [double]$Threshold
+        [Parameter(Mandatory)][object]$Model,
+        [object]$TitleGroup,
+        [double]$Threshold,
+        [double]$TitleCategoryThreshold = 0.74
     )
 
     $bestGroup = $null
     $bestScore = 0.0
+    $bestHeaderScore = 0.0
+    $bestTitleMatch = $false
+
     foreach ($group in $Groups) {
-        $score = Measure-ConfluenceTableHeaderSimilarity -Left $group.HeaderKeys -Right $HeaderKeys
+        $headerScore = Measure-ConfluenceTableHeaderSimilarity -Left @($group.HeaderKeys) -Right @($Model.HeaderKeys)
+        $sameTitleGroup = (
+            $null -ne $TitleGroup -and
+            -not [string]::IsNullOrWhiteSpace($TitleGroup.Key) -and
+            -not [string]::IsNullOrWhiteSpace($group.TitleGroupKey) -and
+            $TitleGroup.Key -eq $group.TitleGroupKey
+        )
+
+        $score = $headerScore
+        if ($sameTitleGroup) {
+            $titleScore = [Math]::Max([double]$TitleGroup.Score, [double]$group.TitleGroupScore)
+            $categoryBoost = if ($titleScore -ge 0.65) { 0.90 } else { 0.76 }
+            if ($Model.HeaderSource -eq 'Generated' -or $group.HeaderSource -eq 'Generated') {
+                $categoryBoost += 0.04
+            }
+            $score = [Math]::Max($headerScore, [Math]::Min(0.96, $categoryBoost))
+        } elseif ($Model.HeaderSource -eq 'Generated' -or $group.HeaderSource -eq 'Generated') {
+            $score = $headerScore * 0.55
+        }
+
         if ($score -gt $bestScore) {
             $bestScore = $score
+            $bestHeaderScore = $headerScore
             $bestGroup = $group
+            $bestTitleMatch = $sameTitleGroup
         }
     }
 
-    if ($null -ne $bestGroup -and $bestScore -ge $Threshold) {
+    if ($null -ne $bestGroup -and ($bestScore -ge $Threshold -or ($bestTitleMatch -and $bestScore -ge $TitleCategoryThreshold))) {
         return [PSCustomObject]@{
-            Group = $bestGroup
-            Score = $bestScore
+            Group       = $bestGroup
+            Score       = [Math]::Round($bestScore, 4)
+            HeaderScore = [Math]::Round($bestHeaderScore, 4)
+            TitleMatch  = $bestTitleMatch
         }
     }
 
     return $null
+}
+
+function Resolve-ConfluenceTableGroupHeader {
+    param(
+        [Parameter(Mandatory)][object]$Group,
+        [Parameter(Mandatory)][string]$Header
+    )
+
+    $headerKey = Get-ConfluenceTableHeaderKey -Header $Header
+    if ($Group.HeaderKeyToName.ContainsKey($headerKey)) {
+        return $Group.HeaderKeyToName[$headerKey]
+    }
+
+    $candidate = Normalize-ConfluenceTableCellText -Text $Header
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        $candidate = "Column$($Group.Headers.Count + 1)"
+    }
+
+    $baseCandidate = $candidate
+    $suffix = 2
+    while (@($Group.Headers | Where-Object { "$_" -ieq $candidate }).Count -gt 0) {
+        $candidate = "$baseCandidate`_$suffix"
+        $suffix++
+    }
+
+    $Group.HeaderKeyToName[$headerKey] = $candidate
+    [void]$Group.Headers.Add($candidate)
+    [void]$Group.HeaderKeys.Add($headerKey)
+    $Group.Fingerprint = (@($Group.HeaderKeys) -join '|')
+    return $candidate
+}
+
+function Add-ConfluenceTableGroupHeaders {
+    param(
+        [Parameter(Mandatory)][object]$Group,
+        [string[]]$Headers
+    )
+
+    foreach ($header in @($Headers)) {
+        [void](Resolve-ConfluenceTableGroupHeader -Group $Group -Header $header)
+    }
+}
+
+function Convert-ConfluenceTableGroupRowsForCsv {
+    param(
+        [Parameter(Mandatory)][System.Collections.ArrayList]$Rows,
+        [Parameter(Mandatory)][string[]]$Headers
+    )
+
+    foreach ($row in $Rows) {
+        $ordered = [ordered]@{}
+        foreach ($header in $Headers) {
+            if ($row -is [System.Collections.IDictionary]) {
+                $ordered[$header] = if ($row.Contains($header)) { $row[$header] } else { "" }
+            } elseif ($row.PSObject.Properties[$header]) {
+                $ordered[$header] = $row.PSObject.Properties[$header].Value
+            } else {
+                $ordered[$header] = ""
+            }
+        }
+        [PSCustomObject]$ordered
+    }
 }
 
 function Get-ConfluenceTablePageAttribution {
@@ -1786,7 +2145,9 @@ function Export-ConfluenceTables {
         [object]$SingleCompanyChoice,
         [object[]]$AttributionOptions = @(),
         [object[]]$Companies = @(),
-        [double]$SchemaMatchThreshold = 0.86
+        [double]$SchemaMatchThreshold = 0.86,
+        [bool]$UseTitleGrouping = $true,
+        [double]$TitleCategoryMatchThreshold = 0.74
     )
 
     New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
@@ -1830,26 +2191,65 @@ function Export-ConfluenceTables {
                 continue
             }
 
-            $groupMatch = Get-ConfluenceTableGroup -Groups $groups -HeaderKeys $model.HeaderKeys -Threshold $SchemaMatchThreshold
+            $titleGroup = Get-ConfluenceTableTitleGroup `
+                -Page $page `
+                -Model $model `
+                -PageAttribution $pageAttribution `
+                -Companies $Companies `
+                -Enabled $UseTitleGrouping
+
+            $groupMatch = Get-ConfluenceTableGroup `
+                -Groups $groups `
+                -Model $model `
+                -TitleGroup $titleGroup `
+                -Threshold $SchemaMatchThreshold `
+                -TitleCategoryThreshold $TitleCategoryMatchThreshold
+
             if ($null -eq $groupMatch) {
+                $headers = [System.Collections.ArrayList]@()
+                $headerKeys = [System.Collections.ArrayList]@()
                 $group = [PSCustomObject]@{
-                    Id          = $groups.Count + 1
-                    Headers     = $model.Headers
-                    HeaderKeys  = $model.HeaderKeys
-                    Fingerprint = ($model.HeaderKeys -join '|')
-                    Rows        = [System.Collections.ArrayList]@()
-                    Tables      = [System.Collections.ArrayList]@()
+                    Id                = $groups.Count + 1
+                    GroupName         = $titleGroup.Name
+                    TitleGroupKey     = $titleGroup.Key
+                    TitleGroupScore   = $titleGroup.Score
+                    TitleGroupSource  = $titleGroup.Source
+                    Headers           = $headers
+                    HeaderKeys        = $headerKeys
+                    HeaderKeyToName   = @{}
+                    Fingerprint       = ''
+                    HeaderSource      = $model.HeaderSource
+                    HeaderConfidence  = $model.HeaderConfidence
+                    Rows              = [System.Collections.ArrayList]@()
+                    Tables            = [System.Collections.ArrayList]@()
                 }
+                Add-ConfluenceTableGroupHeaders -Group $group -Headers $model.Headers
                 [void]$groups.Add($group)
                 $matchScore = 1.0
+                $headerMatchScore = 1.0
+                $titleMatched = $false
             } else {
                 $group = $groupMatch.Group
                 $matchScore = $groupMatch.Score
+                $headerMatchScore = $groupMatch.HeaderScore
+                $titleMatched = $groupMatch.TitleMatch
+                Add-ConfluenceTableGroupHeaders -Group $group -Headers $model.Headers
+                if ([string]::IsNullOrWhiteSpace($group.GroupName) -and -not [string]::IsNullOrWhiteSpace($titleGroup.Name)) {
+                    $group.GroupName = $titleGroup.Name
+                }
+                if ($model.HeaderConfidence -gt $group.HeaderConfidence) {
+                    $group.HeaderSource = $model.HeaderSource
+                    $group.HeaderConfidence = $model.HeaderConfidence
+                }
             }
 
             $tableRecord = [PSCustomObject]@{
                 GroupId        = $group.Id
                 MatchScore     = $matchScore
+                HeaderMatchScore = $headerMatchScore
+                TitleMatched   = $titleMatched
+                TitleGroupKey  = $titleGroup.Key
+                TitleGroupName = $titleGroup.Name
                 CompanyId      = $pageAttribution.CompanyId
                 CompanyName    = $pageAttribution.CompanyName
                 SpaceKey       = $page.SpaceKey
@@ -1859,6 +2259,8 @@ function Export-ConfluenceTables {
                 PageUrl        = $page.FullUrl
                 TableIndex     = $tableIndex
                 HeaderRowCount = $model.HeaderRowCount
+                HeaderSource   = $model.HeaderSource
+                HeaderConfidence = $model.HeaderConfidence
                 ColumnCount    = $model.ColumnCount
                 DataRowCount   = $model.DataRows.Count
                 Headers        = ($model.Headers -join ' | ')
@@ -1883,8 +2285,9 @@ function Export-ConfluenceTables {
                     RowIndex   = $rowIndex
                 }
 
-                for ($columnIndex = 0; $columnIndex -lt $group.Headers.Count; $columnIndex++) {
-                    $row[$group.Headers[$columnIndex]] = if ($columnIndex -lt $dataRow.Count) { $dataRow[$columnIndex] } else { "" }
+                for ($columnIndex = 0; $columnIndex -lt $model.Headers.Count; $columnIndex++) {
+                    $groupHeader = Resolve-ConfluenceTableGroupHeader -Group $group -Header $model.Headers[$columnIndex]
+                    $row[$groupHeader] = if ($columnIndex -lt $dataRow.Count) { $dataRow[$columnIndex] } else { "" }
                 }
 
                 [void]$group.Rows.Add([PSCustomObject]$row)
@@ -1897,40 +2300,57 @@ function Export-ConfluenceTables {
 
     $groupSummaries = [System.Collections.ArrayList]@()
     foreach ($group in $groups) {
-        $nameSeed = if ($group.Headers.Count -gt 0) { ($group.Headers | Select-Object -First 4) -join '-' } else { "schema" }
+        $nameSeed = if (-not [string]::IsNullOrWhiteSpace($group.GroupName)) {
+            $group.GroupName
+        } elseif ($group.Headers.Count -gt 0) {
+            ($group.Headers | Select-Object -First 4) -join '-'
+        } else {
+            "schema"
+        }
         $safeName = Get-SafeFilename -Name $nameSeed -MaxLength 70
         if ([string]::IsNullOrWhiteSpace($safeName)) { $safeName = "schema" }
 
         $csvPath = Join-Path $OutDir ("schema-{0:D3}-{1}.csv" -f $group.Id, $safeName)
         $schemaPath = Join-Path $OutDir ("schema-{0:D3}-{1}.schema.json" -f $group.Id, $safeName)
-        $headers = @($metadataHeaders + $group.Headers)
+        $headers = @($metadataHeaders + @($group.Headers))
 
         if ($group.Rows.Count -gt 0) {
-            $group.Rows | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+            Convert-ConfluenceTableGroupRowsForCsv -Rows $group.Rows -Headers $headers |
+                Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
         } else {
             Write-CsvHeaderOnly -Path $csvPath -Headers $headers
         }
 
         $schema = [PSCustomObject]@{
-            GroupId     = $group.Id
-            CsvPath     = $csvPath
-            Fingerprint = $group.Fingerprint
-            Headers     = $group.Headers
-            HeaderKeys  = $group.HeaderKeys
-            TableCount  = $group.Tables.Count
-            RowCount    = $group.Rows.Count
-            Tables      = $group.Tables
+            GroupId          = $group.Id
+            GroupName        = $group.GroupName
+            TitleGroupKey    = $group.TitleGroupKey
+            TitleGroupScore  = $group.TitleGroupScore
+            TitleGroupSource = $group.TitleGroupSource
+            CsvPath          = $csvPath
+            Fingerprint      = $group.Fingerprint
+            Headers          = @($group.Headers)
+            HeaderKeys       = @($group.HeaderKeys)
+            HeaderSource     = $group.HeaderSource
+            HeaderConfidence = $group.HeaderConfidence
+            TableCount       = $group.Tables.Count
+            RowCount         = $group.Rows.Count
+            Tables           = $group.Tables
         }
         $schema | ConvertTo-Json -Depth 10 | Out-File $schemaPath -Encoding UTF8
 
         [void]$groupSummaries.Add([PSCustomObject]@{
-            GroupId     = $group.Id
-            CsvPath     = $csvPath
-            SchemaPath  = $schemaPath
-            Fingerprint = $group.Fingerprint
-            TableCount  = $group.Tables.Count
-            RowCount    = $group.Rows.Count
-            Headers     = ($group.Headers -join ' | ')
+            GroupId          = $group.Id
+            GroupName        = $group.GroupName
+            TitleGroupKey    = $group.TitleGroupKey
+            CsvPath          = $csvPath
+            SchemaPath       = $schemaPath
+            Fingerprint      = $group.Fingerprint
+            TableCount       = $group.Tables.Count
+            RowCount         = $group.Rows.Count
+            HeaderSource     = $group.HeaderSource
+            HeaderConfidence = $group.HeaderConfidence
+            Headers          = (@($group.Headers) -join ' | ')
         })
     }
 
@@ -1943,7 +2363,7 @@ function Export-ConfluenceTables {
         $inventory | Export-Csv -Path $inventoryCsvPath -NoTypeInformation -Encoding UTF8
         $inventory | ConvertTo-Json -Depth 10 | Out-File $inventoryJsonPath -Encoding UTF8
     } else {
-        Write-CsvHeaderOnly -Path $inventoryCsvPath -Headers @('GroupId','MatchScore','CompanyId','CompanyName','SpaceKey','SpaceName','PageId','PageTitle','PageUrl','TableIndex','HeaderRowCount','ColumnCount','DataRowCount','Headers','HeaderKeys')
+        Write-CsvHeaderOnly -Path $inventoryCsvPath -Headers @('GroupId','MatchScore','HeaderMatchScore','TitleMatched','TitleGroupKey','TitleGroupName','CompanyId','CompanyName','SpaceKey','SpaceName','PageId','PageTitle','PageUrl','TableIndex','HeaderRowCount','HeaderSource','HeaderConfidence','ColumnCount','DataRowCount','Headers','HeaderKeys')
         @() | ConvertTo-Json | Out-File $inventoryJsonPath -Encoding UTF8
     }
 
@@ -1959,6 +2379,8 @@ function Export-ConfluenceTables {
         OutputDir            = $OutDir
         GeneratedAt          = (Get-Date)
         SchemaMatchThreshold = $SchemaMatchThreshold
+        UseTitleGrouping     = $UseTitleGrouping
+        TitleCategoryMatchThreshold = $TitleCategoryMatchThreshold
         GroupCount           = $groups.Count
         TableCount           = $inventory.Count
         RowCount             = [int]$totalExportedRows

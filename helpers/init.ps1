@@ -27,6 +27,15 @@ $Confluence_Username=($Confluence_Username ?? "$(read-host 'please enter the use
 @($ConfluenceDomain, $confluenceBase, $ConfluenceDomainBase, $ConfluenceBaseUrl) | ForEach-Object { Write-Host "Set Confluence variable: $_" -ForegroundColor Green }
 $requiredPowershellVersion = [version]"7.5.0"
 $RequiredHuduVersion = "2.46.0"
+$NonInteractive = Get-CoercedBoolean -Value ($noninteractive ?? $env:CONFLUENCE_NONINTERACTIVE ?? $env:NONINTERACTIVE) -Default $false
+$ExportConfluenceTables = Get-CoercedBoolean -Value ($ExportConfluenceTables ?? $env:CONFLUENCE_EXPORT_TABLES ?? $env:EXPORT_CONFLUENCE_TABLES) -Default $false
+$ConfluenceTableSchemaMatchThreshold = Get-CoercedDouble -Value ($ConfluenceTableSchemaMatchThreshold ?? $env:CONFLUENCE_TABLE_SCHEMA_MATCH_THRESHOLD) -Default 0.86
+$ConfluenceTableTitleGrouping = Get-CoercedBoolean -Value ($ConfluenceTableTitleGrouping ?? $env:CONFLUENCE_TABLE_TITLE_GROUPING) -Default $true
+$ConfluenceTableTitleMatchThreshold = Get-CoercedDouble -Value ($ConfluenceTableTitleMatchThreshold ?? $env:CONFLUENCE_TABLE_TITLE_MATCH_THRESHOLD) -Default 0.74
+$SkipArchivedConfluenceContent = Get-CoercedBoolean -Value ($SkipArchivedConfluenceContent ?? $env:CONFLUENCE_SKIP_ARCHIVED ?? $env:SKIP_ARCHIVED_CONFLUENCE_CONTENT) -Default $true
+$TrackAttachmentDetails = Get-CoercedBoolean -Value ($TrackAttachmentDetails ?? $env:CONFLUENCE_TRACK_ATTACHMENT_DETAILS) -Default $false
+$RelinkReferencedTitleText = Get-CoercedBoolean -Value ($RelinkReferencedTitleText ?? $env:CONFLUENCE_RELINK_REFERENCED_TITLE_TEXT) -Default $true
+$RelinkAllTitleText = Get-CoercedBoolean -Value ($RelinkAllTitleText ?? $env:CONFLUENCE_RELINK_ALL_TITLE_TEXT) -Default $false
 
 # ---------------------------------------
 # quick validation

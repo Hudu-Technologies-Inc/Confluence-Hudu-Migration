@@ -1059,6 +1059,8 @@ function Start-RunSummary {
         NonInteractive      = $NonInteractive
         TableExportEnabled  = $ExportConfluenceTables
         TableExportSchemaMatchThreshold = $ConfluenceTableSchemaMatchThreshold
+        TableExportTitleGrouping = $ConfluenceTableTitleGrouping
+        TableExportTitleMatchThreshold = $ConfluenceTableTitleMatchThreshold
         SkipArchivedConfluenceContent = $SkipArchivedConfluenceContent
         RelinkReferencedTitleText = $RelinkReferencedTitleText
         RelinkAllTitleText = $RelinkAllTitleText

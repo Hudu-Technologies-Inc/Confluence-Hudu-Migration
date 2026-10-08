@@ -49,7 +49,7 @@ If you plan on migrating articles to individual companies, you can either create
 > [!IMPORTANT]
 > whether you intend to move articles to central kb or company kb (or both) make sure that your Hudu instance does not have these core features switched off first.
 
-Optional: set `$ExportConfluenceTables = $true` in your environment file, or set the environment variable `CONFLUENCE_EXPORT_TABLES=true`, to export detected Confluence HTML tables into grouped CSVs under the run's logs folder. `$ConfluenceTableSchemaMatchThreshold` controls fuzzy schema grouping and defaults to `0.86`.
+Optional: set `$ExportConfluenceTables = $true` in your environment file, or set the environment variable `CONFLUENCE_EXPORT_TABLES=true`, to export detected Confluence HTML tables into grouped CSVs under the run's logs folder. `$ConfluenceTableSchemaMatchThreshold` controls fuzzy schema grouping and defaults to `0.86`; `$ConfluenceTableTitleGrouping` also uses page-title/category hints to merge related tables that have weak or missing HTML headers.
 
 Archived Confluence pages are skipped by default with `$SkipArchivedConfluenceContent = $true`. Set it to `$false` only if you intentionally want to include non-current Confluence content.
 
@@ -61,12 +61,9 @@ You can decide to:
 - migrate pages to Hudu from a single space
 - migrate pages to Hudu from all spaces
 
-Now, the html bodies of your confluence articles, attachments, will be parsed, have their links spat out. 
-you can enter 1 to proceed (no going back) or enter 2 for this question to go back and start over
+Next, the script moves straight into destination selection. It no longer dumps article HTML or pre-counts links during source discovery.
 
 <img width="1435" alt="image" src="https://github.com/user-attachments/assets/0ee34fa5-34b8-4192-b636-fc317bc8a1a2" />
-
-This is mostly useful if your articles are blank or have an issue, to verify that the contents and links are present.
 
 Next, you'll be asked about where to migrate these articles.
 You can decide to:
@@ -74,7 +71,7 @@ You can decide to:
 - migrate these all to a single company
 - decide each time per-article
 
-If you selected to decide each time per-article, you'll then choose one of the following for each page/article based on the page title and page preview-
+If you selected to decide each time per-article, you'll then choose one of the following for each page/article based on the page title, space, Confluence ID, and URL:
 -to associate page/article with any given company
 -leave it as a central/global kb article
 -skip article/page migration
@@ -84,7 +81,7 @@ If you selected to decide each time per-article, you'll then choose one of the f
 ## Main Migration
 
 ### Step 1: Stubbing Articles
-Article stubs will be created so we can correlate Hudu Article id's later. If you chose to decide on where to migrate articles on a per-article basis, you are shown a sample of each article and decide which companies (or central kb) to migrate these to. If you chose the per-space destination option, the script maps each Confluence space to a matching Hudu company by name and creates missing companies before stubbing articles. At this point, articles will just contain a 'preview' of the article bodies.
+Article stubs will be created so we can correlate Hudu Article id's later. If you chose to decide on where to migrate articles on a per-article basis, you are shown article metadata and decide which companies (or central kb) to migrate these to. If you chose the per-space destination option, the script maps each Confluence space to a matching Hudu company by name and creates missing companies before stubbing articles.
 
 <img width="1204" alt="image" src="https://github.com/user-attachments/assets/e635fdd9-493f-4df9-89ec-9e580f0c00ca" />
 
