@@ -9,6 +9,8 @@ $userDataDir = $psscriptroot # fully qualified path to store data and logs (you 
 ## advanced + noninteractive options
 $ExportConfluenceTables = $false # or set $env:CONFLUENCE_EXPORT_TABLES = "true"
 $ConfluenceTableSchemaMatchThreshold = 0.86
+$RelinkReferencedTitleText = $true # relink only page titles referenced by Confluence page-link metadata
+$RelinkAllTitleText = $false # legacy fallback: scan every article for every imported page title; higher memory/CPU
 
 $noninteractive = $false # set to true if you want to avoid prompts
 $preselectedSourceStrategy = $null # set to 1 if you would like all spaces, 0 for single-space
