@@ -36,6 +36,9 @@ $SkipArchivedConfluenceContent = Get-CoercedBoolean -Value ($SkipArchivedConflue
 $TrackAttachmentDetails = Get-CoercedBoolean -Value ($TrackAttachmentDetails ?? $env:CONFLUENCE_TRACK_ATTACHMENT_DETAILS) -Default $false
 $RelinkReferencedTitleText = Get-CoercedBoolean -Value ($RelinkReferencedTitleText ?? $env:CONFLUENCE_RELINK_REFERENCED_TITLE_TEXT) -Default $true
 $RelinkAllTitleText = Get-CoercedBoolean -Value ($RelinkAllTitleText ?? $env:CONFLUENCE_RELINK_ALL_TITLE_TEXT) -Default $false
+$ConfluenceRequestMaxRetries = Get-CoercedInteger -Value ($ConfluenceRequestMaxRetries ?? $env:CONFLUENCE_REQUEST_MAX_RETRIES) -Default 8 -Minimum 0
+$ConfluenceRequestInitialDelaySeconds = Get-CoercedInteger -Value ($ConfluenceRequestInitialDelaySeconds ?? $env:CONFLUENCE_REQUEST_INITIAL_DELAY_SECONDS) -Default 2 -Minimum 1
+$ConfluenceRequestMaxDelaySeconds = Get-CoercedInteger -Value ($ConfluenceRequestMaxDelaySeconds ?? $env:CONFLUENCE_REQUEST_MAX_DELAY_SECONDS) -Default 120 -Minimum 1
 
 # ---------------------------------------
 # quick validation

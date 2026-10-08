@@ -53,6 +53,8 @@ Optional: set `$ExportConfluenceTables = $true` in your environment file, or set
 
 Archived Confluence pages are skipped by default with `$SkipArchivedConfluenceContent = $true`. Set it to `$false` only if you intentionally want to include non-current Confluence content.
 
+Confluence API requests automatically retry on HTTP `429` and transient `5xx` responses, using `Retry-After`/rate-limit reset headers when Atlassian provides them and capping waits with `$ConfluenceRequestMaxDelaySeconds`. You can tune this with `$ConfluenceRequestMaxRetries`, `$ConfluenceRequestInitialDelaySeconds`, and `$ConfluenceRequestMaxDelaySeconds`.
+
 <img width="2322" height="2338" alt="image" src="https://github.com/user-attachments/assets/c97bbc43-9d17-4b96-844d-2961e09355d4" />
 
 

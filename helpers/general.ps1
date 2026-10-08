@@ -1064,6 +1064,9 @@ function Start-RunSummary {
         SkipArchivedConfluenceContent = $SkipArchivedConfluenceContent
         RelinkReferencedTitleText = $RelinkReferencedTitleText
         RelinkAllTitleText = $RelinkAllTitleText
+        ConfluenceRequestMaxRetries = $ConfluenceRequestMaxRetries
+        ConfluenceRequestInitialDelaySeconds = $ConfluenceRequestInitialDelaySeconds
+        ConfluenceRequestMaxDelaySeconds = $ConfluenceRequestMaxDelaySeconds
         StartedAt           = $(get-date)
         FinishedAt          = $null
         RunDuration         = $null

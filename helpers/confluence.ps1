@@ -13,6 +13,265 @@ $ConfluenceSourceStrategies = @(
     Identifier = 2
 }
 )
+
+function Get-ConfluenceRetryStatusCodes {
+    $configured = $ConfluenceRequestRetryStatusCodes ?? $env:CONFLUENCE_REQUEST_RETRY_STATUS_CODES
+    if ($null -eq $configured) {
+        return @(429, 500, 502, 503, 504)
+    }
+
+    $values = @()
+    foreach ($item in @($configured)) {
+        foreach ($part in ("$item" -split ',')) {
+            $code = 0
+            if ([int]::TryParse($part.Trim(), [ref]$code)) {
+                $values += $code
+            }
+        }
+    }
+
+    if ($values.Count -eq 0) {
+        return @(429, 500, 502, 503, 504)
+    }
+
+    return @($values | Select-Object -Unique)
+}
+
+function Get-ConfluenceResponseStatusCode {
+    param(
+        [object]$Response,
+        [object]$ErrorRecord
+    )
+
+    foreach ($candidate in @(
+        $Response,
+        $ErrorRecord.Exception.Response,
+        $ErrorRecord.Exception
+    )) {
+        if ($null -eq $candidate) { continue }
+
+        try {
+            if ($candidate.PSObject.Properties['StatusCode'] -and $null -ne $candidate.StatusCode) {
+                return [int]$candidate.StatusCode
+            }
+        } catch {}
+
+        try {
+            if ($candidate.Response -and $candidate.Response.PSObject.Properties['StatusCode'] -and $null -ne $candidate.Response.StatusCode) {
+                return [int]$candidate.Response.StatusCode
+            }
+        } catch {}
+    }
+
+    return $null
+}
+
+function Get-ConfluenceResponseHeaderValue {
+    param(
+        [object]$Response,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    if ($null -eq $Response) { return $null }
+
+    foreach ($headerBag in @($Response.Headers, $Response.Content.Headers)) {
+        if ($null -eq $headerBag) { continue }
+
+        try {
+            $directValue = $headerBag[$Name]
+            if ($null -ne $directValue) {
+                return (@($directValue) | Select-Object -First 1)
+            }
+        } catch {}
+
+        try {
+            if ($headerBag.AllKeys) {
+                foreach ($key in @($headerBag.AllKeys)) {
+                    if ("$key" -ieq $Name) {
+                        return (@($headerBag[$key]) | Select-Object -First 1)
+                    }
+                }
+            }
+        } catch {}
+
+        try {
+            foreach ($header in $headerBag.GetEnumerator()) {
+                if ("$($header.Key)" -ieq $Name) {
+                    return (@($header.Value) | Select-Object -First 1)
+                }
+            }
+        } catch {}
+    }
+
+    return $null
+}
+
+function Get-ConfluenceRequestRetryDelaySeconds {
+    param(
+        [object]$Response,
+        [int]$Attempt,
+        [int]$InitialDelaySeconds = 2,
+        [int]$MaxDelaySeconds = 120
+    )
+
+    $InitialDelaySeconds = [Math]::Max(1, $InitialDelaySeconds)
+    $MaxDelaySeconds = [Math]::Max($InitialDelaySeconds, $MaxDelaySeconds)
+
+    foreach ($headerName in @('Retry-After', 'X-RateLimit-Reset')) {
+        $headerValue = Get-ConfluenceResponseHeaderValue -Response $Response -Name $headerName
+        if ([string]::IsNullOrWhiteSpace($headerValue)) { continue }
+
+        $seconds = 0
+        if ([int]::TryParse("$headerValue", [ref]$seconds)) {
+            return [Math]::Min($MaxDelaySeconds, [Math]::Max(1, $seconds))
+        }
+
+        try {
+            $retryAt = [DateTimeOffset]::Parse("$headerValue", [Globalization.CultureInfo]::InvariantCulture)
+            $seconds = [int][Math]::Ceiling(($retryAt.UtcDateTime - (Get-Date).ToUniversalTime()).TotalSeconds)
+            if ($seconds -gt 0) {
+                return [Math]::Min($MaxDelaySeconds, [Math]::Max(1, $seconds))
+            }
+        } catch {}
+    }
+
+    $delay = $InitialDelaySeconds * [Math]::Pow(2, [Math]::Max(0, $Attempt - 1))
+    $delay = [Math]::Min($MaxDelaySeconds, [int][Math]::Ceiling($delay))
+    $jitter = if ($MaxDelaySeconds -gt 1) { Get-Random -Minimum 0 -Maximum ([Math]::Min(3, $MaxDelaySeconds)) } else { 0 }
+    return [Math]::Min($MaxDelaySeconds, [Math]::Max(1, $delay + $jitter))
+}
+
+function Write-ConfluenceRetryMessage {
+    param(
+        [string]$Uri,
+        [string]$Method,
+        [int]$StatusCode,
+        [int]$DelaySeconds,
+        [int]$Attempt,
+        [int]$MaxRetries
+    )
+
+    $displayUri = if ($Uri.Length -gt 180) { "$($Uri.Substring(0, 177))..." } else { $Uri }
+    $message = "Confluence request returned HTTP $StatusCode for $Method $displayUri. Waiting $DelaySeconds second(s) before retry $Attempt of $MaxRetries."
+    if (Get-Command PrintAndLog -ErrorAction SilentlyContinue) {
+        PrintAndLog -message $message -Color Yellow
+    } else {
+        Write-Warning $message
+    }
+}
+
+function Test-ConfluenceRequestShouldRetry {
+    param(
+        [nullable[int]]$StatusCode,
+        [int]$Attempt,
+        [int]$MaxRetries
+    )
+
+    if ($Attempt -gt $MaxRetries) { return $false }
+    if ($null -eq $StatusCode) { return $false }
+    return @((Get-ConfluenceRetryStatusCodes)) -contains [int]$StatusCode
+}
+
+function Invoke-ConfluenceRestMethod {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [string]$Method = 'GET',
+        [hashtable]$Headers = @{},
+        [object]$Body,
+        [string]$ContentType,
+        [nullable[int]]$MaxRetries = $null,
+        [nullable[int]]$InitialDelaySeconds = $null,
+        [nullable[int]]$MaxDelaySeconds = $null
+    )
+
+    $effectiveMaxRetries = if ($null -ne $MaxRetries) { [int]$MaxRetries } elseif ($null -ne $ConfluenceRequestMaxRetries) { [int]$ConfluenceRequestMaxRetries } else { 8 }
+    $effectiveInitialDelay = if ($null -ne $InitialDelaySeconds) { [int]$InitialDelaySeconds } elseif ($null -ne $ConfluenceRequestInitialDelaySeconds) { [int]$ConfluenceRequestInitialDelaySeconds } else { 2 }
+    $effectiveMaxDelay = if ($null -ne $MaxDelaySeconds) { [int]$MaxDelaySeconds } elseif ($null -ne $ConfluenceRequestMaxDelaySeconds) { [int]$ConfluenceRequestMaxDelaySeconds } else { 120 }
+    $attempt = 0
+
+    while ($true) {
+        $requestParams = @{
+            Uri         = $Uri
+            Method      = $Method
+            Headers     = $Headers
+            ErrorAction = 'Stop'
+        }
+        if ($PSBoundParameters.ContainsKey('Body')) { $requestParams.Body = $Body }
+        if (-not [string]::IsNullOrWhiteSpace($ContentType)) { $requestParams.ContentType = $ContentType }
+
+        try {
+            return Invoke-RestMethod @requestParams
+        } catch {
+            $attempt += 1
+            $statusCode = Get-ConfluenceResponseStatusCode -ErrorRecord $_
+            if (-not (Test-ConfluenceRequestShouldRetry -StatusCode $statusCode -Attempt $attempt -MaxRetries $effectiveMaxRetries)) {
+                throw
+            }
+
+            $delay = Get-ConfluenceRequestRetryDelaySeconds -Response $_.Exception.Response -Attempt $attempt -InitialDelaySeconds $effectiveInitialDelay -MaxDelaySeconds $effectiveMaxDelay
+            Write-ConfluenceRetryMessage -Uri $Uri -Method $Method -StatusCode $statusCode -DelaySeconds $delay -Attempt $attempt -MaxRetries $effectiveMaxRetries
+            Start-Sleep -Seconds $delay
+        }
+    }
+}
+
+function Invoke-ConfluenceWebRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [string]$Method = 'GET',
+        [hashtable]$Headers = @{},
+        [string]$OutFile,
+        [nullable[int]]$MaximumRedirection = $null,
+        [switch]$SkipHttpErrorCheck,
+        [nullable[int]]$MaxRetries = $null,
+        [nullable[int]]$InitialDelaySeconds = $null,
+        [nullable[int]]$MaxDelaySeconds = $null
+    )
+
+    $effectiveMaxRetries = if ($null -ne $MaxRetries) { [int]$MaxRetries } elseif ($null -ne $ConfluenceRequestMaxRetries) { [int]$ConfluenceRequestMaxRetries } else { 8 }
+    $effectiveInitialDelay = if ($null -ne $InitialDelaySeconds) { [int]$InitialDelaySeconds } elseif ($null -ne $ConfluenceRequestInitialDelaySeconds) { [int]$ConfluenceRequestInitialDelaySeconds } else { 2 }
+    $effectiveMaxDelay = if ($null -ne $MaxDelaySeconds) { [int]$MaxDelaySeconds } elseif ($null -ne $ConfluenceRequestMaxDelaySeconds) { [int]$ConfluenceRequestMaxDelaySeconds } else { 120 }
+    $attempt = 0
+
+    while ($true) {
+        $requestParams = @{
+            Uri         = $Uri
+            Method      = $Method
+            Headers     = $Headers
+            ErrorAction = 'Stop'
+        }
+        if (-not [string]::IsNullOrWhiteSpace($OutFile)) { $requestParams.OutFile = $OutFile }
+        if ($null -ne $MaximumRedirection) { $requestParams.MaximumRedirection = [int]$MaximumRedirection }
+        if ($SkipHttpErrorCheck) { $requestParams.SkipHttpErrorCheck = $true }
+
+        try {
+            $response = Invoke-WebRequest @requestParams
+            $statusCode = Get-ConfluenceResponseStatusCode -Response $response
+            if (Test-ConfluenceRequestShouldRetry -StatusCode $statusCode -Attempt ($attempt + 1) -MaxRetries $effectiveMaxRetries) {
+                $attempt += 1
+                $delay = Get-ConfluenceRequestRetryDelaySeconds -Response $response -Attempt $attempt -InitialDelaySeconds $effectiveInitialDelay -MaxDelaySeconds $effectiveMaxDelay
+                Write-ConfluenceRetryMessage -Uri $Uri -Method $Method -StatusCode $statusCode -DelaySeconds $delay -Attempt $attempt -MaxRetries $effectiveMaxRetries
+                Start-Sleep -Seconds $delay
+                continue
+            }
+
+            return $response
+        } catch {
+            $attempt += 1
+            $statusCode = Get-ConfluenceResponseStatusCode -ErrorRecord $_
+            if (-not (Test-ConfluenceRequestShouldRetry -StatusCode $statusCode -Attempt $attempt -MaxRetries $effectiveMaxRetries)) {
+                throw
+            }
+
+            $delay = Get-ConfluenceRequestRetryDelaySeconds -Response $_.Exception.Response -Attempt $attempt -InitialDelaySeconds $effectiveInitialDelay -MaxDelaySeconds $effectiveMaxDelay
+            Write-ConfluenceRetryMessage -Uri $Uri -Method $Method -StatusCode $statusCode -DelaySeconds $delay -Attempt $attempt -MaxRetries $effectiveMaxRetries
+            Start-Sleep -Seconds $delay
+        }
+    }
+}
+
 function Initialize-ConfluenceSourcePage {
     param([Parameter(Mandatory)][object]$Page)
 
@@ -78,7 +337,7 @@ function Get-AttachmentsForPage {
 
     try {
         do {
-            $attachResponse = Invoke-RestMethod -Uri $attachmentsUrl -Headers @{
+            $attachResponse = Invoke-ConfluenceRestMethod -Uri $attachmentsUrl -Headers @{
                 Authorization = $AuthHeader
                 Accept        = 'application/json'
             }
@@ -104,7 +363,7 @@ function Get-AttachmentsForPage {
         $uri = "$BaseUrl/rest/api/content/$PageId/child/attachment" +
                "?limit=$limit&start=$start&expand=version,metadata"
 
-        $attachResponse = Invoke-RestMethod -Uri $uri -Headers @{
+        $attachResponse = Invoke-ConfluenceRestMethod -Uri $uri -Headers @{
             Authorization = $AuthHeader
             Accept        = 'application/json'
         }
@@ -177,7 +436,7 @@ function Resolve-ConfluenceAttachmentDownloadUrl {
             $apiDownloadUrl = "$BaseUrl/rest/api/content/$attachmentPageId/child/attachment/$attachmentId/download"
             $probe = $null
             try {
-                $probe = Invoke-WebRequest -Uri $apiDownloadUrl -Headers @{ Authorization = $AuthHeader } -Method Get -MaximumRedirection 0 -SkipHttpErrorCheck -ErrorAction SilentlyContinue
+                $probe = Invoke-ConfluenceWebRequest -Uri $apiDownloadUrl -Headers @{ Authorization = $AuthHeader } -Method Get -MaximumRedirection 0 -SkipHttpErrorCheck
                 if ($probe -and [int]$probe.StatusCode -ge 200 -and [int]$probe.StatusCode -lt 400) {
                     return $apiDownloadUrl
                 }
@@ -199,7 +458,7 @@ function Resolve-ConfluenceAttachmentDownloadUrl {
 
     foreach ($attachmentId in (Get-ConfluenceAttachmentIdCandidates -Attachment $Attachment)) {
         try {
-            $detail = Invoke-RestMethod -Uri "$BaseUrl/api/v2/attachments/$attachmentId" -Method GET -Headers @{
+            $detail = Invoke-ConfluenceRestMethod -Uri "$BaseUrl/api/v2/attachments/$attachmentId" -Method GET -Headers @{
                 Authorization = $AuthHeader
                 Accept        = 'application/json'
             }
@@ -228,7 +487,7 @@ function GetAllSpaces {
     try {
         while ($spacesUrl) {
             # Retrieve spaces
-            $response = Invoke-RestMethod -Uri $spacesUrl -Headers @{ Authorization = $authHeader } -Method Get
+            $response = Invoke-ConfluenceRestMethod -Uri $spacesUrl -Headers @{ Authorization = $authHeader } -Method Get
             # Collect space details
             $response.results | ForEach-Object {
                 $all_spaces += [PSCustomObject]@{
@@ -241,7 +500,7 @@ function GetAllSpaces {
             }
             # Check if there is a next page
             if ($response._links.next) {
-                $spacesUrl = "$baseUrl$($response._links.next)"
+                $spacesUrl = Resolve-ConfluenceUrl -BaseUrl $baseUrl -PathOrUrl $response._links.next
             } else {
                 $spacesUrl = $null
             }
@@ -286,7 +545,7 @@ function GetAllPages {
     do {
         PrintAndLog -message "Querying: $pagesUrl"
 
-        $response = Invoke-RestMethod -Uri $pagesUrl -Method GET -Headers @{
+        $response = Invoke-ConfluenceRestMethod -Uri $pagesUrl -Method GET -Headers @{
             "Authorization" = $authHeader
             "Accept"        = "application/json"
         }
@@ -304,7 +563,7 @@ function GetAllPages {
                     # already in correct shape — body.storage.value exists
                 } elseif ($SpaceId -ne "" -and -not $page.body) {
                     # v2 sometimes needs body fetched separately if missing
-                    $pageDetail = Invoke-RestMethod -Uri "$baseUrl/api/v2/pages/$($page.id)?body-format=storage" -Method GET -Headers @{
+                    $pageDetail = Invoke-ConfluenceRestMethod -Uri "$baseUrl/api/v2/pages/$($page.id)?body-format=storage" -Method GET -Headers @{
                         "Authorization" = $authHeader
                         "Accept"        = "application/json"
                     }
@@ -378,7 +637,7 @@ function Invoke-ConfluenceAttachDownload {
         $downloadUrl = Resolve-ConfluenceAttachmentDownloadUrl -Attachment $attachment -BaseUrl $ConfluenceBaseUrl -AuthHeader $authHeader -PageId $pageId
         $record.SourceUrl = $downloadUrl
 
-        Invoke-WebRequest -Uri $downloadUrl -Headers @{ Authorization = $authHeader } -OutFile $localPath -MaximumRedirection 10 -ErrorAction Stop
+        Invoke-ConfluenceWebRequest -Uri $downloadUrl -Headers @{ Authorization = $authHeader } -OutFile $localPath -MaximumRedirection 10 | Out-Null
         Write-Host "Saved attachment: $filename"
 
         $record.SuccessDownload = $true
@@ -745,11 +1004,11 @@ function Get-ConfluenceFolderPath {
 
         try {
             if ($currentType -eq "folder") {
-                $resp = Invoke-RestMethod `
+                $resp = Invoke-ConfluenceRestMethod `
                     -Uri     "$BaseUrl/api/v2/folders/$currentId" `
                     -Headers @{ Authorization = $AuthHeader; Accept = "application/json" }
             } else {
-                $resp = Invoke-RestMethod `
+                $resp = Invoke-ConfluenceRestMethod `
                     -Uri     "$BaseUrl/api/v2/pages/$currentId" `
                     -Headers @{ Authorization = $AuthHeader; Accept = "application/json" }
             }
@@ -1393,6 +1652,24 @@ function Get-CoercedDouble {
     }
 
     return $Default
+}
+
+function Get-CoercedInteger {
+    param(
+        [object]$Value,
+        [int]$Default,
+        [int]$Minimum = [int]::MinValue,
+        [int]$Maximum = [int]::MaxValue
+    )
+
+    if ($null -eq $Value) { return $Default }
+
+    $parsed = 0
+    if (-not [int]::TryParse("$Value", [ref]$parsed)) {
+        return $Default
+    }
+
+    return [Math]::Min($Maximum, [Math]::Max($Minimum, $parsed))
 }
 
 function Normalize-ConfluenceTableCellText {
