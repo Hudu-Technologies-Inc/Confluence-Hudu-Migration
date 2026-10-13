@@ -20,6 +20,9 @@ function Write-ErrorObjectsToFile {
         [string]$Name = "unnamed",
 
         [Parameter()]
+        [int]$MaxConsoleChars = 4000,
+
+        [Parameter()]
         [ValidateSet("Black","DarkBlue","DarkGreen","DarkCyan","DarkRed","DarkMagenta","DarkYellow","Gray","DarkGray","Blue","Green","Cyan","Red","Magenta","Yellow","White")]
         [string]$Color
     )
@@ -67,10 +70,15 @@ $propertyDump
         }
     }
 
+    $consoleContent = $logContent
+    if ($MaxConsoleChars -gt 0 -and $consoleContent.Length -gt $MaxConsoleChars) {
+        $consoleContent = "$($consoleContent.Substring(0, $MaxConsoleChars))`n... (truncated; full error was written to $fullPath)"
+    }
+
     if ($Color) {
-        Write-Host "$logContent" -ForegroundColor $Color
+        Write-Host "$consoleContent" -ForegroundColor $Color
     } else {
-        Write-Host "$logContent"
+        Write-Host "$consoleContent"
     }
 }
 
