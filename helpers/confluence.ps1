@@ -106,6 +106,49 @@ function Get-ConfluenceResponseHeaderValue {
     return $null
 }
 
+function Get-ConfluenceRequestFailureMessage {
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [Parameter(Mandatory)][object]$ErrorRecord
+    )
+
+    $statusCode = Get-ConfluenceResponseStatusCode -ErrorRecord $ErrorRecord
+    $rawMessage = try { "$($ErrorRecord.Exception.Message)" } catch { "" }
+    if ([string]::IsNullOrWhiteSpace($rawMessage)) {
+        $rawMessage = try { "$ErrorRecord" } catch { "No exception message was available." }
+    }
+
+    $decodedMessage = try { [System.Net.WebUtility]::HtmlDecode($rawMessage) } catch { $rawMessage }
+    $compactMessage = $decodedMessage -replace '(?is)<script.*?</script>', ' '
+    $compactMessage = $compactMessage -replace '(?is)<style.*?</style>', ' '
+    $compactMessage = $compactMessage -replace '(?is)<[^>]+>', ' '
+    $compactMessage = $compactMessage -replace '\s+', ' '
+    $compactMessage = $compactMessage.Trim()
+    if ($compactMessage.Length -gt 500) {
+        $compactMessage = "$($compactMessage.Substring(0, 500))..."
+    }
+
+    $statusText = if ($null -ne $statusCode) { "HTTP $statusCode" } else { "no HTTP status was reported" }
+    $hints = @()
+
+    if ($decodedMessage -match 'Go to Jira home|jira\.webresources|Encountered a "null - null" error while loading this page') {
+        $hints += "Atlassian returned a Jira HTML page instead of Confluence API JSON. Check that this Atlassian site has Confluence enabled, that ConfluenceDomain points to the Confluence site, and that the account has Confluence product access."
+    } elseif ($statusCode -eq 401) {
+        $hints += "The email/API token pair was rejected."
+    } elseif ($statusCode -eq 403) {
+        $hints += "The account authenticated, but does not have access to the requested Confluence resource."
+    } elseif ($statusCode -eq 404) {
+        $hints += "The Confluence API path was not found. Check the Confluence domain/base URL."
+    }
+
+    $message = "Confluence request failed for $Uri ($statusText). $compactMessage"
+    if ($hints.Count -gt 0) {
+        $message = "$message $($hints -join ' ')"
+    }
+
+    return $message
+}
+
 function Get-ConfluenceRequestRetryDelaySeconds {
     param(
         [object]$Response,
@@ -487,7 +530,10 @@ function GetAllSpaces {
     try {
         while ($spacesUrl) {
             # Retrieve spaces
-            $response = Invoke-ConfluenceRestMethod -Uri $spacesUrl -Headers @{ Authorization = $authHeader } -Method Get
+            $response = Invoke-ConfluenceRestMethod -Uri $spacesUrl -Headers @{
+                Authorization = $authHeader
+                Accept        = "application/json"
+            } -Method Get
             # Collect space details
             $response.results | ForEach-Object {
                 $all_spaces += [PSCustomObject]@{
@@ -506,15 +552,14 @@ function GetAllSpaces {
             }
         }
     } catch {
-                Write-ErrorObjectsToFile -Name "$($_.name ?? "unnamed")" -ErrorObject @{
-                    Error       = $_
-                    Record      = $record 
-                    Attachment  = $att
-                    Message     ="Error During Spaces Request"
-                    response    = $response
-                    spacesUrl  = $spacesUrl
-                }
-            }
+        Write-ErrorObjectsToFile -Name "$($_.name ?? "unnamed")" -ErrorObject @{
+            Error       = $_
+            Message     = "Error During Spaces Request"
+            response    = $response
+            spacesUrl   = $spacesUrl
+        }
+        throw (Get-ConfluenceRequestFailureMessage -Uri $spacesUrl -ErrorRecord $_)
+    }
     return $all_spaces
 }
 function GetAllPages {
