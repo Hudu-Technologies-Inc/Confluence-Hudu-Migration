@@ -109,57 +109,56 @@ function Set-HuduModuleInitialized {
     param (
             [string]$HAPImodulePath = "C:\Users\$env:USERNAME\Documents\GitHub\HuduAPI\HuduAPI\HuduAPI.psm1",
             [bool]$use_hudu_fork = $true,
-            [version]$RequiredHuduVersion = [version]"2.43.1",
-            $DisallowedVersions = @([version]"2.37.0"),
+            [bool]$RefreshHuduApiForkEachRun = $true,
             [string]$HuduApiRepositoryUrl = $($env:HUDUAPI_REPOSITORY_URL ?? "https://github.com/Hudu-Technologies-Inc/HuduAPI.git"),
             [string]$HuduApiBranch = $($env:HUDUAPI_REPOSITORY_BRANCH ?? "master"),
             [string]$HuduApiZipUrl = $env:HUDUAPI_ZIP_URL,
             [string]$BundledHuduApiZipPath = (
                 Join-Path (
-                    $(if ($PSScriptRoot) { $PSScriptRoot } else { (Resolve-Path .).Path })
+                    $(if ($PSScriptRoot) { Split-Path -Path $PSScriptRoot -Parent } else { (Resolve-Path .).Path })
                 ) 'HAPI.zip'
             ),
-        [string]$HuduBaseURL,
-        [string]$HuduAPIKey            
+            [string]$HuduBaseURL,
+            [string]$HuduAPIKey            
         )
     $AllowHuduGalleryFallback = $false
- 
+
     function Test-HuduApiModuleLayout {
         param([Parameter(Mandatory)][string]$ModulePath)
- 
+
         if (-not (Test-Path -LiteralPath $ModulePath -PathType Leaf)) {
             return $false
         }
- 
+
         $moduleDirectory = Split-Path -Path $ModulePath -Parent
         return (
             (Test-Path -LiteralPath (Join-Path $moduleDirectory "Public") -PathType Container) -and
             (Test-Path -LiteralPath (Join-Path $moduleDirectory "Private") -PathType Container)
         )
     }
- 
+
     function Get-GitHubRepositoryParts {
         param([Parameter(Mandatory)][string]$RepositoryUrl)
- 
+
         if ($RepositoryUrl -notmatch 'github\.com[:/](?<owner>[^/]+)/(?<repo>[^/]+?)(?:\.git)?/?$') {
             return $null
         }
- 
+
         [PSCustomObject]@{
             Owner = $matches.owner
             Repo  = ($matches.repo -replace '\.git$', '')
         }
     }
- 
+
     function New-HuduApiStagingRoot {
         $tempRoot = Join-Path $env:TEMP "HuduAPI-Fork-$([guid]::NewGuid().Guid)"
         New-Item -ItemType Directory -Path $tempRoot -Force -ErrorAction Stop | Out-Null
         return (Join-Path $tempRoot "HuduAPI")
     }
- 
+
     function Unblock-HuduApiPath {
         param([Parameter(Mandatory)][string]$Path)
- 
+
         try {
             if (Test-Path -LiteralPath $Path) {
                 Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue |
@@ -168,45 +167,45 @@ function Set-HuduModuleInitialized {
             }
         } catch {}
     }
- 
+
     function Expand-HuduApiZipToStaging {
         param(
             [Parameter(Mandatory)][string]$ZipPath,
             [Parameter(Mandatory)][string]$StagingRepoRoot
         )
- 
+
         $stagingParent = Split-Path -Path $StagingRepoRoot -Parent
         $extractRoot = Join-Path $stagingParent "zip-extract"
- 
+
         Unblock-HuduApiPath -Path $ZipPath
         Expand-Archive -Path $ZipPath -DestinationPath $extractRoot -Force -ErrorAction Stop
         Unblock-HuduApiPath -Path $extractRoot
- 
+
         $candidateRoots = @((Get-Item -LiteralPath $extractRoot -ErrorAction Stop))
         $candidateRoots += @(Get-ChildItem -LiteralPath $extractRoot -Directory -Recurse -ErrorAction Stop)
         $extracted = $candidateRoots |
             Where-Object { Test-HuduApiModuleLayout -ModulePath (Join-Path $_.FullName "HuduAPI\HuduAPI.psm1") } |
             Select-Object -First 1
- 
+
         if (-not $extracted) {
             throw "Archive did not contain a complete HuduAPI module layout."
         }
- 
+
         Move-Item -LiteralPath $extracted.FullName -Destination $StagingRepoRoot -Force -ErrorAction Stop
     }
- 
+
     function Install-HuduApiForkSamuraiStyle {
         param(
             [Parameter(Mandatory)][string]$RepositoryUrl,
             [Parameter(Mandatory)][string]$Branch,
             [Parameter(Mandatory)][string]$StagingRepoRoot
         )
- 
+
         $git = Get-Command git -ErrorAction SilentlyContinue
         if (-not $git) {
             throw "git was not found on this machine."
         }
- 
+
         $oldGitPrompt = $env:GIT_TERMINAL_PROMPT
         $oldGitSshCommand = $env:GIT_SSH_COMMAND
         try {
@@ -221,7 +220,7 @@ function Set-HuduModuleInitialized {
             $env:GIT_SSH_COMMAND = $oldGitSshCommand
         }
     }
- 
+
     function Install-HuduApiForkAshigaruStyle {
         param(
             [Parameter(Mandatory)][string]$RepositoryUrl,
@@ -229,7 +228,7 @@ function Set-HuduModuleInitialized {
             [Parameter(Mandatory)][string]$StagingRepoRoot,
             [string]$ZipUrl
         )
- 
+
         if ([string]::IsNullOrWhiteSpace($ZipUrl)) {
             $repoParts = Get-GitHubRepositoryParts -RepositoryUrl $RepositoryUrl
             if (-not $repoParts) {
@@ -237,28 +236,28 @@ function Set-HuduModuleInitialized {
             }
             $ZipUrl = "https://codeload.github.com/$($repoParts.Owner)/$($repoParts.Repo)/zip/refs/heads/$Branch"
         }
- 
+
         $stagingParent = Split-Path -Path $StagingRepoRoot -Parent
         $zip = Join-Path $stagingParent "HuduAPI.zip"
         $headers = @{ "User-Agent" = "ITGlue-Hudu-Migration" }
- 
+
         Invoke-WebRequest -Uri $ZipUrl -Headers $headers -OutFile $zip -ErrorAction Stop | Out-Null
         Expand-HuduApiZipToStaging -ZipPath $zip -StagingRepoRoot $StagingRepoRoot
     }
- 
+
     function Install-HuduApiForkBundledZipStyle {
         param(
             [Parameter(Mandatory)][string]$ZipPath,
             [Parameter(Mandatory)][string]$StagingRepoRoot
         )
- 
+
         if (-not (Test-Path -LiteralPath $ZipPath -PathType Leaf)) {
             throw "Bundled HuduAPI zip was not found at $ZipPath."
         }
- 
+
         Expand-HuduApiZipToStaging -ZipPath $ZipPath -StagingRepoRoot $StagingRepoRoot
     }
- 
+
     function Install-HuduApiFork {
         param(
             [Parameter(Mandatory)][string]$ModulePath,
@@ -267,12 +266,12 @@ function Set-HuduModuleInitialized {
             [string]$ZipUrl,
             [string]$BundledZipPath
         )
- 
+
         $targetRepoRoot = Split-Path -Path (Split-Path -Path $ModulePath -Parent) -Parent
         $targetParent = Split-Path -Path $targetRepoRoot -Parent
         $stagingRepoRoot = $null
         $successfulMethod = $null
- 
+
         $installMethods = @(
             @{
                 Name = "Ashigaru-Warrior-Style"
@@ -296,21 +295,21 @@ function Set-HuduModuleInitialized {
                 }
             }
         )
- 
+
         foreach ($method in $installMethods) {
             $stagingRepoRoot = New-HuduApiStagingRoot
             $stagingContainer = Split-Path -Path $stagingRepoRoot -Parent
- 
+
             try {
                 $methodSource = if ($method.Name -eq "Bundled-Zip") { $BundledZipPath } else { "$RepositoryUrl ($Branch)" }
                 Write-Host "Trying HuduAPI fork install via $($method.Name) from $methodSource." -ForegroundColor Cyan
                 & $method.Script $RepositoryUrl $Branch $stagingRepoRoot $ZipUrl $BundledZipPath
- 
+
                 $stagedModulePath = Join-Path $stagingRepoRoot "HuduAPI\HuduAPI.psm1"
                 if (-not (Test-HuduApiModuleLayout -ModulePath $stagedModulePath)) {
                     throw "Downloaded fork did not include a complete HuduAPI module layout."
                 }
- 
+
                 $successfulMethod = $method.Name
                 break
             } catch {
@@ -321,24 +320,33 @@ function Set-HuduModuleInitialized {
                 $stagingRepoRoot = $null
             }
         }
- 
+
         if (-not $successfulMethod) {
             throw "Unable to install HuduAPI fork from $RepositoryUrl ($Branch)."
         }
- 
+
         New-Item -ItemType Directory -Path $targetParent -Force -ErrorAction Stop | Out-Null
         if (Test-Path -LiteralPath $targetRepoRoot) {
-            $backupPath = "$targetRepoRoot.backup-$(Get-Date -Format 'yyyyMMddHHmmss')"
+            $backupPath = if (Test-HuduApiModuleLayout -ModulePath $ModulePath) {
+                "$targetRepoRoot.previous"
+            } else {
+                "$targetRepoRoot.backup-$(Get-Date -Format 'yyyyMMddHHmmss')"
+            }
+
+            if (Test-Path -LiteralPath $backupPath) {
+                Remove-Item -LiteralPath $backupPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
+
             Move-Item -LiteralPath $targetRepoRoot -Destination $backupPath -Force -ErrorAction Stop
-            Write-Warning "Existing incomplete HuduAPI path was moved to $backupPath."
+            Write-Host "Existing HuduAPI path was moved to $backupPath before refresh." -ForegroundColor DarkGray
         }
- 
+
         $stagingGitPath = Join-Path $stagingRepoRoot ".git"
         if (Test-Path -LiteralPath $stagingGitPath) {
             Remove-Item -LiteralPath $stagingGitPath -Recurse -Force -ErrorAction SilentlyContinue
         }
         Unblock-HuduApiPath -Path $stagingRepoRoot
- 
+
         $stagingContainer = Split-Path -Path $stagingRepoRoot -Parent
         New-Item -ItemType Directory -Path $targetRepoRoot -Force -ErrorAction Stop | Out-Null
         Get-ChildItem -LiteralPath $stagingRepoRoot -Force -ErrorAction Stop |
@@ -348,35 +356,44 @@ function Set-HuduModuleInitialized {
         }
         Write-Host "Installed HuduAPI fork via $successfulMethod to $targetRepoRoot." -ForegroundColor Green
     }
- 
+
     try {
         Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force -ErrorAction Stop
         Write-Host "Process execution policy set to Bypass for this PowerShell session." -ForegroundColor DarkGray
     } catch {
         Write-Warning "Could not set process execution policy to Bypass: $($_.Exception.Message)"
     }
- 
+
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     } catch {
         Write-Warning "Could not force TLS 1.2 for this PowerShell session: $($_.Exception.Message)"
     }
     $ProgressPreference = 'SilentlyContinue'
- 
+
     if ([string]::IsNullOrWhiteSpace($BundledHuduApiZipPath) -and -not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
         $repoRoot = Split-Path -Path $PSScriptRoot -Parent
-        $BundledHuduApiZipPath = Join-Path $repoRoot "ExternalModules\HuduAPI.zip"
+        $BundledHuduApiZipPath = Join-Path $repoRoot 'HAPI.zip'
     }
- 
+
     if ($true -eq $use_hudu_fork) {
-        if (-not (Test-HuduApiModuleLayout -ModulePath $HAPImodulePath)) {
-            Write-Host "Using latest $HuduApiBranch branch of HuduAPI fork." -ForegroundColor Cyan
+        $hasCompleteLocalFork = Test-HuduApiModuleLayout -ModulePath $HAPImodulePath
+        if ($RefreshHuduApiForkEachRun -or -not $hasCompleteLocalFork) {
+            $refreshReason = if ($RefreshHuduApiForkEachRun) {
+                "Refreshing local HuduAPI fork from the latest $HuduApiBranch branch."
+            } else {
+                "No complete local HuduAPI fork found. Downloading the latest $HuduApiBranch branch."
+            }
+
+            Write-Host $refreshReason -ForegroundColor Cyan
             Install-HuduApiFork -ModulePath $HAPImodulePath -RepositoryUrl $HuduApiRepositoryUrl -Branch $HuduApiBranch -ZipUrl $HuduApiZipUrl -BundledZipPath $BundledHuduApiZipPath
+        } else {
+            Write-Host "Using existing HuduAPI fork at $HAPImodulePath." -ForegroundColor DarkGray
         }
     } else {
         Write-Host "HuduAPI fork loading is disabled. PSGallery will only be used if AllowHuduGalleryFallback is true."
     }
- 
+
     Remove-Module HuduAPI -Force -ErrorAction SilentlyContinue
     if (Test-HuduApiModuleLayout -ModulePath $HAPImodulePath) {
         $huduApiManifestPath = [System.IO.Path]::ChangeExtension($HAPImodulePath, ".psd1")
@@ -395,15 +412,16 @@ function Set-HuduModuleInitialized {
         Import-Module HuduAPI -ErrorAction Stop
         Write-Host "Installed and imported HuduAPI from PSGallery"
     }
- 
+
     #Login to Hudu
     Set-HuduInstance -HuduBaseURL $HuduBaseURL -HuduAPIKey $HuduAPIKey
- 
+
     # Check we have the correct version
-    $CurrentHuduVersion = [version]($(Get-HuduAppInfo).version)
- 
-    return $CurrentHuduVersion
+    $CurrentVersion = [version]($(Get-HuduAppInfo).version)
+
+    return $CurrentVersion
 }
+
 Set-HuduModuleInitialized -HuduBaseURL $HuduBaseURL -HuduAPIKey $HuduAPIKey
  
 
