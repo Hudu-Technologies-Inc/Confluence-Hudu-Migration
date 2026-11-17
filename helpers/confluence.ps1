@@ -113,7 +113,10 @@ function Get-ConfluenceRequestFailureMessage {
     )
 
     $statusCode = Get-ConfluenceResponseStatusCode -ErrorRecord $ErrorRecord
-    $rawMessage = try { "$($ErrorRecord.Exception.Message)" } catch { "" }
+    $rawMessage = try { "$($ErrorRecord.ErrorDetails.Message)" } catch { "" }
+    if ([string]::IsNullOrWhiteSpace($rawMessage)) {
+        $rawMessage = try { "$($ErrorRecord.Exception.Message)" } catch { "" }
+    }
     if ([string]::IsNullOrWhiteSpace($rawMessage)) {
         $rawMessage = try { "$ErrorRecord" } catch { "No exception message was available." }
     }
