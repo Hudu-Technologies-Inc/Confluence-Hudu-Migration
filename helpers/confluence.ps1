@@ -2593,7 +2593,7 @@ function Export-ConfluenceTables {
 
         if ($group.Rows.Count -gt 0) {
             Convert-ConfluenceTableGroupRowsForCsv -Rows $group.Rows -Headers $headers |
-                Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+                Export-Csv -Path $csvPath -Encoding UTF8
         } else {
             Write-CsvHeaderOnly -Path $csvPath -Headers $headers
         }
@@ -2637,7 +2637,7 @@ function Export-ConfluenceTables {
     $warningsPath = Join-Path $OutDir "table-export-warnings.json"
 
     if ($inventory.Count -gt 0) {
-        $inventory | Export-Csv -Path $inventoryCsvPath -NoTypeInformation -Encoding UTF8
+        $inventory | Export-Csv -Path $inventoryCsvPath -Encoding UTF8
         $inventory | ConvertTo-Json -Depth 10 | Out-File $inventoryJsonPath -Encoding UTF8
     } else {
         Write-CsvHeaderOnly -Path $inventoryCsvPath -Headers @('GroupId','MatchScore','HeaderMatchScore','TitleMatched','TitleGroupKey','TitleGroupName','CompanyId','CompanyName','SpaceKey','SpaceName','PageId','PageTitle','PageUrl','TableIndex','HeaderRowCount','HeaderSource','HeaderConfidence','ColumnCount','DataRowCount','Headers','HeaderKeys')
